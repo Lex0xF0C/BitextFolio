@@ -6,7 +6,15 @@ import {
   moveSentenceToGroup,
   splitSentenceInBlock,
   suggestHintedGroups,
+  updateSentenceMarkersInBlock,
 } from '../js/core/alignment.js';
+import {
+  addMarkerRange,
+  computeMarkerCoveragePercent,
+  hasMarkerOverlap,
+  removeMarkerRange,
+  splitTokensByMarkers,
+} from '../js/core/markers.js';
 import { pairClassifiedBlocks, splitIntoRawBlocks } from '../js/core/block-parser.js';
 import {
   buildAlignmentBlock,
@@ -394,4 +402,53 @@ test('insertTextIntoGroup allows pasting Japanese directly into an unmatched gro
   assert.equal(blk.jaSentences.length, 3);
   assert.equal(blk.jaSentences[2].rawText, '3番目の文です。');
   assert.ok(!blk.warnings.includes('UNMATCHED_COUNT'));
+});
+
+test('Sentence marker ranges normalize, subtract, split tokens, and survive sentence split/merge', () => {
+  // Overlapping and adjacent intervals merge cleanly
+  let ranges = addMarkerRange([], 0, 12, 50);
+  ranges = addMarkerRange(ranges, 10, 25, 50);
+  assert.deepEqual(ranges, [{ start: 0, end: 25 }]);
+  assert.equal(hasMarkerOverlap(ranges, 20, 30), true);
+  assert.equal(computeMarkerCoveragePercent(ranges, 50), 50);
+
+  // Subtracting a middle range splits the interval cleanly
+  ranges = removeMarkerRange(ranges, 8, 15, 50);
+  assert.deepEqual(ranges, [
+    { start: 0, end: 8 },
+    { start: 15, end: 25 },
+  ]);
+
+  // Token splitting across inline markup
+  const tokens = tokenizeInlineMarkup('Check *critical* events.');
+  const segs = splitTokensByMarkers(tokens, [{ start: 0, end: 10 }]);
+  assert.deepEqual(segs, [
+    { type: 'text', value: 'Check ', marked: true },
+    { type: 'em', value: 'crit', marked: true },
+    { type: 'em', value: 'ical', marked: false },
+    { type: 'text', value: ' events.', marked: false },
+  ]);
+
+  // Block-level marker add + sentence split + merge preservation
+  let blk = buildAlignmentBlock(
+    'First long clause continues here and ends.',
+    '最初の長い節がここで続き、終わります。',
+    0,
+  );
+  const sid = blk.enSentences[0].id;
+  blk = updateSentenceMarkersInBlock(blk, 'en', sid, (prev, maxLen) =>
+    addMarkerRange(prev, 0, 22, maxLen),
+  );
+  assert.deepEqual(blk.enSentences[0].markers, [{ start: 0, end: 22 }]);
+
+  // Split around char 18 ("First long clause " / "continues here and ends.")
+  blk = splitSentenceInBlock(blk, 'en', sid, 18);
+  assert.equal(blk.enSentences.length, 2);
+  assert.deepEqual(blk.enSentences[0].markers, [{ start: 0, end: 17 }]);
+  assert.deepEqual(blk.enSentences[1].markers, [{ start: 0, end: 4 }]);
+
+  // Merge back and verify contiguous marker restores
+  blk = mergeSentenceWithNextInBlock(blk, 'en', sid);
+  assert.equal(blk.enSentences.length, 1);
+  assert.deepEqual(blk.enSentences[0].markers, [{ start: 0, end: 22 }]);
 });

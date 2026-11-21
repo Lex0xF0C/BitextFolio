@@ -36,8 +36,9 @@ styles/app.css              # Design tokens, light/dark themes, layout & compone
 js/
 ├── main.js                 # App bootstrap & global keyboard shortcuts
 ├── core/                   # PURE domain modules (ZERO DOM / browser API dependencies)
-│   ├── markup.js           # Inline markup tokenization/stripping, deterministic FNV hashing
 │   ├── lang-classifier.js  # Kana/kanji vs Latin ratio classification
+│   ├── markers.js          # Sentence marker intervals, split/merge remapping, token slicing
+│   ├── markup.js           # Inline markup tokenization/stripping, deterministic FNV hashing
 │   ├── block-parser.js     # Blank-line block parsing, alternating & English-only pairing
 │   ├── sentence-splitter.js# EN/JA deterministic sentence splitting & list-line splitting
 │   ├── alignment.js        # n:m group operations, anchor hints, DP alignment

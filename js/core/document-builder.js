@@ -302,6 +302,8 @@ export function computeProjectStats(
   let mismatchBlocks = 0;
   let glossaryWarningGroups = 0;
   let hintWarningGroups = 0;
+  let tempNoOmissionGroups = 0;
+  let markedGroups = 0;
   const dupJaIdx = buildDuplicateJaIndex(blocks);
   const dismissedHints = project?.dismissedHints || {};
 
@@ -330,6 +332,12 @@ export function computeProjectStats(
       else if (group.status === 'needs_review') needsReviewGroups += 1;
       else if (group.status === 'source_changed') changedGroups += 1;
       else unreadGroups += 1;
+
+      if (group.tempNoOmission) tempNoOmissionGroups += 1;
+      const hasSentenceMarkers =
+        (group.enIds || []).some((id) => (enMap.get(id)?.markers || []).length > 0) ||
+        (group.jaIds || []).some((id) => (jaMap.get(id)?.markers || []).length > 0);
+      if (hasSentenceMarkers) markedGroups += 1;
 
       if (glossaryEntries && glossaryEntries.length > 0) {
         const enPlain = (group.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ');
@@ -365,6 +373,8 @@ export function computeProjectStats(
     mismatchBlocks,
     glossaryWarningGroups,
     hintWarningGroups,
+    tempNoOmissionGroups,
+    markedGroups,
     progressPercent,
   };
 }

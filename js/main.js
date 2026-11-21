@@ -100,6 +100,9 @@ document.addEventListener('keydown', (e) => {
       );
       if (textarea) textarea.focus();
     });
+  } else if (e.key === 't') {
+    e.preventDefault();
+    store.toggleGroupTempNoOmission(ownerBlock.id, groupId);
   } else if (e.key === 'm') {
     e.preventDefault();
     store.toggleMemo(groupId, true);

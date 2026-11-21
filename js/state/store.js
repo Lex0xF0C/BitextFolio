@@ -8,7 +8,9 @@ import {
   moveSentenceToGroup,
   splitSentenceInBlock,
   syncBlockMeta,
+  updateSentenceMarkersInBlock,
 } from '../core/alignment.js';
+import { addMarkerRange, removeMarkerRange } from '../core/markers.js';
 import {
   buildAlignmentBlock,
   computeProjectStats,
@@ -458,6 +460,53 @@ export function createAppStore() {
         const groups = blk.groups.map((g) => (g.id === groupId ? { ...g, memo } : g));
         return { ...blk, groups };
       });
+    },
+    toggleGroupTempNoOmission(blockId, groupId, forceValue = null) {
+      state.selectedGroupId = groupId;
+      let nextChecked = false;
+      updateActiveProject((proj) => {
+        const blocks = proj.blocks.map((blk) => {
+          if (blk.id !== blockId) return blk;
+          const groups = blk.groups.map((g) => {
+            if (g.id !== groupId) return g;
+            nextChecked = forceValue !== null ? Boolean(forceValue) : !Boolean(g.tempNoOmission);
+            return {
+              ...g,
+              tempNoOmission: nextChecked,
+              tempNoOmissionAt: nextChecked ? new Date().toISOString() : '',
+            };
+          });
+          return { ...blk, groups };
+        });
+        return { ...proj, lastFocusedGroupId: groupId, blocks };
+      });
+      showToast(
+        nextChecked
+          ? '一時記録：この枠に「訳漏れなし」を記録しました'
+          : '「訳漏れなし」の一時記録を解除しました',
+      );
+    },
+    addSentenceMarker(blockId, lang, sentenceId, start, end, toastMsg = 'マーカを付けました') {
+      mutateBlock(blockId, (blk) =>
+        updateSentenceMarkersInBlock(blk, lang, sentenceId, (prev, maxLen) =>
+          addMarkerRange(prev, start, end, maxLen),
+        ),
+      );
+      if (toastMsg) showToast(toastMsg);
+    },
+    removeSentenceMarker(blockId, lang, sentenceId, start, end) {
+      mutateBlock(blockId, (blk) =>
+        updateSentenceMarkersInBlock(blk, lang, sentenceId, (prev, maxLen) =>
+          removeMarkerRange(prev, start, end, maxLen),
+        ),
+      );
+      showToast('選択範囲のマーカを解除しました');
+    },
+    clearSentenceMarkers(blockId, lang, sentenceId) {
+      mutateBlock(blockId, (blk) =>
+        updateSentenceMarkersInBlock(blk, lang, sentenceId, () => []),
+      );
+      showToast('この文のマーカをすべて解除しました');
     },
     async setBlockAllStatus(blockId, status) {
       let targetBlock = null;

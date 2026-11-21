@@ -5,6 +5,7 @@
 import { computeGroupHints } from '../core/alignment.js';
 import { checkGroupGlossary } from '../core/glossary.js';
 import { buildDuplicateJaIndex, detectGroupHints } from '../core/hints.js';
+import { computeMarkerCoveragePercent, hasMarkerOverlap } from '../core/markers.js';
 import { extractJapaneseCandidateTerms, findTmMatches } from '../core/tm.js';
 import {
   blockHasActiveHints,
@@ -239,6 +240,86 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     });
   }
 
+  function getPlainOffsetInContainer(containerEl, boundaryNode, boundaryOffset) {
+    if (!containerEl || !containerEl.contains(boundaryNode)) return null;
+    let offset = 0;
+    let done = false;
+    function walk(node) {
+      if (done) return;
+      if (node === boundaryNode) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          offset += Math.min(boundaryOffset, node.textContent.length);
+          done = true;
+          return;
+        }
+        const children = node.childNodes;
+        const limit = Math.min(boundaryOffset, children.length);
+        for (let i = 0; i < limit; i += 1) {
+          offset += children[i].textContent.length;
+        }
+        done = true;
+        return;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += node.textContent.length;
+      } else {
+        for (const child of node.childNodes) {
+          walk(child);
+          if (done) return;
+        }
+      }
+    }
+    walk(containerEl);
+    return offset;
+  }
+
+  function getSelectionOffsetsInSentence(sentenceTextEl) {
+    if (!sentenceTextEl) return null;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    const range = sel.getRangeAt(0);
+    if (typeof range.intersectsNode === 'function' && !range.intersectsNode(sentenceTextEl)) {
+      return null;
+    }
+
+    const totalLen = sentenceTextEl.textContent.length;
+    if (totalLen === 0) return null;
+
+    let start = getPlainOffsetInContainer(sentenceTextEl, range.startContainer, range.startOffset);
+    let end = getPlainOffsetInContainer(sentenceTextEl, range.endContainer, range.endOffset);
+
+    if (start === null) {
+      const containerRange = document.createRange();
+      containerRange.selectNodeContents(sentenceTextEl);
+      if (range.compareBoundaryPoints(Range.START_TO_START, containerRange) <= 0) {
+        start = 0;
+      } else {
+        return null;
+      }
+    }
+    if (end === null) {
+      const containerRange = document.createRange();
+      containerRange.selectNodeContents(sentenceTextEl);
+      if (range.compareBoundaryPoints(Range.END_TO_END, containerRange) >= 0) {
+        end = totalLen;
+      } else {
+        return null;
+      }
+    }
+
+    if (end <= start) return null;
+    const text = sentenceTextEl.textContent.slice(start, end);
+    if (!text.trim()) return null;
+    return { start, end, text };
+  }
+
+  function clearBrowserSelection() {
+    const sel = window.getSelection();
+    if (sel && typeof sel.removeAllRanges === 'function') {
+      sel.removeAllRanges();
+    }
+  }
+
   function getSelectedTextInsideCell(cellEl, clickedSentenceEl) {
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) {
@@ -265,6 +346,12 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
 
     const cellEl = e.currentTarget;
     const sentenceItemEl = e.target.closest?.('.sentence-item');
+    const sentenceId = sentenceItemEl?.dataset?.sentenceId || null;
+    const sentenceList = lang === 'en' ? block.enSentences : block.jaSentences;
+    const sentenceObj = sentenceId ? sentenceList.find((s) => s.id === sentenceId) || null : null;
+    const sentenceTextEl = sentenceItemEl?.querySelector?.('.sentence-text') || null;
+    const selRange = getSelectionOffsetsInSentence(sentenceTextEl);
+
     const picked = getSelectedTextInsideCell(cellEl, sentenceItemEl);
     const jaSuggestions = extractJapaneseCandidateTerms(jaPlain).slice(0, 6);
     const rememberedForGroup =
@@ -273,146 +360,245 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         : '';
 
     const items = [];
+    const headerLabel = selRange
+      ? `${lang === 'en' ? '選択英文' : '選択和文'}: 「${truncateLabel(selRange.text, 30)}」`
+      : lang === 'en'
+        ? `${picked.fromSelection ? '選択英文' : '対象英文'}: 「${truncateLabel(picked.text || enPlain, 30)}」`
+        : `${picked.fromSelection ? '選択和文' : '対象和文'}: 「${truncateLabel(picked.text || jaPlain, 30)}」`;
+
+    items.push(
+      el('div', {
+        className: 'context-menu-header',
+        textContent: headerLabel,
+      }),
+    );
+
+    if (sentenceObj && selRange) {
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item is-primary',
+          textContent: '文頭〜ここまでをマーカ（ここまで確認済）',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.addSentenceMarker(
+              block.id,
+              lang,
+              sentenceObj.id,
+              0,
+              selRange.end,
+              '文頭〜選択位置までマーカを付けました',
+            );
+          },
+        }),
+      );
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: '選択範囲のみをマーカ（ハイライト）',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.addSentenceMarker(
+              block.id,
+              lang,
+              sentenceObj.id,
+              selRange.start,
+              selRange.end,
+              '選択範囲にマーカを付けました',
+            );
+          },
+        }),
+      );
+      if (hasMarkerOverlap(sentenceObj.markers, selRange.start, selRange.end)) {
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            textContent: '選択範囲のマーカを解除',
+            onClick: () => {
+              closeContextMenu();
+              clearBrowserSelection();
+              store.removeSentenceMarker(
+                block.id,
+                lang,
+                sentenceObj.id,
+                selRange.start,
+                selRange.end,
+              );
+            },
+          }),
+        );
+      }
+    }
+
+    if (sentenceObj && (sentenceObj.markers || []).length > 0) {
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: 'この文のマーカをすべて解除',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.clearSentenceMarkers(block.id, lang, sentenceObj.id);
+          },
+        }),
+      );
+    }
+
+    if (sentenceObj && (selRange || (sentenceObj.markers || []).length > 0)) {
+      items.push(el('div', { className: 'context-menu-divider', role: 'separator' }));
+    }
+
+    items.push(
+      el('button', {
+        type: 'button',
+        className: 'context-menu-item',
+        textContent: group.tempNoOmission
+          ? '✓ 訳漏れなし（一時記録）を解除'
+          : '✓ 一時記録：この枠は訳漏れなし',
+        onClick: () => {
+          closeContextMenu();
+          store.toggleGroupTempNoOmission(block.id, group.id);
+        },
+      }),
+    );
+
+    items.push(el('div', { className: 'context-menu-divider', role: 'separator' }));
+
     if (lang === 'en') {
       const targetEn = picked.text || enPlain;
-      if (!targetEn) return;
-      const targetJa = rememberedForGroup || jaPlain;
-      const jaPreview = targetJa ? `「${truncateLabel(targetJa, 22)}」` : '（和文なし）';
+      if (targetEn) {
+        const targetJa = rememberedForGroup || jaPlain;
+        const jaPreview = targetJa ? `「${truncateLabel(targetJa, 22)}」` : '（和文なし）';
 
-      items.push(
-        el('div', {
-          className: 'context-menu-header',
-          textContent: `${picked.fromSelection ? '選択英文' : '対象英文'}: 「${truncateLabel(targetEn, 30)}」`,
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item is-primary',
-          disabled: !targetJa,
-          textContent: `翻訳メモリ (TM) に即登録 ⇔ ${jaPreview}`,
-          onClick: async () => {
-            closeContextMenu();
-            await store.saveCustomTmPair({
-              enPlain: targetEn,
-              jaPlain: targetJa,
-              groupId: group.id,
-            });
-          },
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item',
-          textContent: '対訳を調整して翻訳メモリ (TM) に登録…',
-          onClick: () => {
-            closeContextMenu();
-            openQuickRegister({
-              mode: 'tm',
-              blockId: block.id,
-              groupId: group.id,
-              enText: targetEn,
-              jaText: targetJa,
-              jaSuggestions,
-            });
-          },
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item',
-          textContent: '用語集に即登録（和文候補を選択）…',
-          onClick: () => {
-            closeContextMenu();
-            openQuickRegister({
-              mode: 'glossary',
-              blockId: block.id,
-              groupId: group.id,
-              enText: targetEn,
-              jaText: rememberedForGroup || jaSuggestions[0] || '',
-              jaSuggestions,
-            });
-          },
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item',
-          disabled: !enPlain || !jaPlain,
-          textContent: 'この対訳枠を「確認済」にしてTM登録',
-          onClick: () => {
-            closeContextMenu();
-            store.setGroupStatus(block.id, group.id, 'verified');
-          },
-        }),
-      );
+        items.push(
+          el('button', {
+            type: 'button',
+            className: `context-menu-item${!selRange ? ' is-primary' : ''}`,
+            disabled: !targetJa,
+            textContent: `翻訳メモリ (TM) に即登録 ⇔ ${jaPreview}`,
+            onClick: async () => {
+              closeContextMenu();
+              await store.saveCustomTmPair({
+                enPlain: targetEn,
+                jaPlain: targetJa,
+                groupId: group.id,
+              });
+            },
+          }),
+        );
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            textContent: '対訳を調整して翻訳メモリ (TM) に登録…',
+            onClick: () => {
+              closeContextMenu();
+              openQuickRegister({
+                mode: 'tm',
+                blockId: block.id,
+                groupId: group.id,
+                enText: targetEn,
+                jaText: targetJa,
+                jaSuggestions,
+              });
+            },
+          }),
+        );
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            textContent: '用語集に即登録（和文候補を選択）…',
+            onClick: () => {
+              closeContextMenu();
+              openQuickRegister({
+                mode: 'glossary',
+                blockId: block.id,
+                groupId: group.id,
+                enText: targetEn,
+                jaText: rememberedForGroup || jaSuggestions[0] || '',
+                jaSuggestions,
+              });
+            },
+          }),
+        );
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            disabled: !enPlain || !jaPlain,
+            textContent: 'この対訳枠を「確認済」にしてTM登録',
+            onClick: () => {
+              closeContextMenu();
+              store.setGroupStatus(block.id, group.id, 'verified');
+            },
+          }),
+        );
+      }
     } else {
       const targetJa = picked.text || jaPlain;
-      if (!targetJa) return;
-
-      items.push(
-        el('div', {
-          className: 'context-menu-header',
-          textContent: `${picked.fromSelection ? '選択和文' : '対象和文'}: 「${truncateLabel(targetJa, 30)}」`,
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item is-primary',
-          textContent: 'この和文を対訳ペア用に記憶（次に英文側で右クリック）',
-          onClick: () => {
-            closeContextMenu();
-            rememberedJaSelection = { groupId: group.id, text: targetJa };
-            store.showToast(`和文を記憶しました: 「${truncateLabel(targetJa, 24)}」`);
-          },
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item',
-          disabled: !enPlain,
-          textContent: 'この枠の英文 ⇔ 選択和文をTMに即登録',
-          onClick: async () => {
-            closeContextMenu();
-            await store.saveCustomTmPair({
-              enPlain,
-              jaPlain: targetJa,
-              groupId: group.id,
-            });
-          },
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item',
-          textContent: '対訳を調整してTM／用語集に登録…',
-          onClick: () => {
-            closeContextMenu();
-            openQuickRegister({
-              mode: 'glossary',
-              blockId: block.id,
-              groupId: group.id,
-              enText: enPlain,
-              jaText: targetJa,
-              jaSuggestions,
-            });
-          },
-        }),
-      );
+      if (targetJa) {
+        items.push(
+          el('button', {
+            type: 'button',
+            className: `context-menu-item${!selRange ? ' is-primary' : ''}`,
+            textContent: 'この和文を対訳ペア用に記憶（次に英文側で右クリック）',
+            onClick: () => {
+              closeContextMenu();
+              rememberedJaSelection = { groupId: group.id, text: targetJa };
+              store.showToast(`和文を記憶しました: 「${truncateLabel(targetJa, 24)}」`);
+            },
+          }),
+        );
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            disabled: !enPlain,
+            textContent: 'この枠の英文 ⇔ 選択和文をTMに即登録',
+            onClick: async () => {
+              closeContextMenu();
+              await store.saveCustomTmPair({
+                enPlain,
+                jaPlain: targetJa,
+                groupId: group.id,
+              });
+            },
+          }),
+        );
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            textContent: '対訳を調整してTM／用語集に登録…',
+            onClick: () => {
+              closeContextMenu();
+              openQuickRegister({
+                mode: 'glossary',
+                blockId: block.id,
+                groupId: group.id,
+                enText: enPlain,
+                jaText: targetJa,
+                jaSuggestions,
+              });
+            },
+          }),
+        );
+      }
     }
 
     contextMenuEl.textContent = '';
     for (const item of items) contextMenuEl.appendChild(item);
     contextMenuEl.classList.remove('is-hidden');
 
-    const menuW = 320;
-    const menuH = 220;
+    const rect = contextMenuEl.getBoundingClientRect();
+    const menuW = rect.width || 320;
+    const menuH = rect.height || 280;
     const left = Math.max(8, Math.min(e.clientX, window.innerWidth - menuW - 12));
     const top = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 12));
     contextMenuEl.style.left = `${left}px`;
@@ -567,7 +753,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     });
 
     const textEl = el('p', { className: 'sentence-text' });
-    textEl.appendChild(renderRichSentenceFragment(sentence.rawText));
+    textEl.appendChild(renderRichSentenceFragment(sentence.rawText, sentence.markers));
 
     itemEl.appendChild(el('div', { className: 'sentence-top-row' }, [handle, idBadge, textEl]));
 
@@ -626,6 +812,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       itemEl.appendChild(splitEditor);
     }
 
+    const markerPct = computeMarkerCoveragePercent(sentence.markers, sentence.plainText.length);
     const actions = el('div', { className: 'sentence-actions' }, [
       el('button', {
         type: 'button',
@@ -670,6 +857,15 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         disabled: group.enIds.length + group.jaIds.length <= 1,
         onClick: () => store.moveSentence(block.id, lang, sentence.id, '__NEW__'),
       }),
+      markerPct > 0
+        ? el('button', {
+            type: 'button',
+            className: 'btn btn-xs marker-clear-chip',
+            textContent: `マーカ済 ${markerPct}% ×`,
+            title: 'クリックすると、この文に付けたマーカをすべて解除します',
+            onClick: () => store.clearSentenceMarkers(block.id, lang, sentence.id),
+          })
+        : null,
     ]);
     itemEl.appendChild(actions);
     return itemEl;
@@ -1280,6 +1476,14 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           }),
           el('button', {
             type: 'button',
+            className: `btn btn-xs${group.tempNoOmission ? ' is-temp-checked' : ''}`,
+            'aria-pressed': group.tempNoOmission ? 'true' : 'false',
+            textContent: group.tempNoOmission ? '✓ 訳漏れなし（一時記録）' : '訳漏れなし(仮)',
+            title: '「確認済」にする前の一時チェックとして、この枠に訳漏れがないことを記録します（Tキーでも切替可）',
+            onClick: () => store.toggleGroupTempNoOmission(block.id, group.id),
+          }),
+          el('button', {
+            type: 'button',
             className: 'btn btn-xs',
             textContent: memoOpen ? 'メモを隠す' : 'メモを開く',
             onClick: () => store.toggleMemo(group.id),
@@ -1545,6 +1749,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       ['verified', '確認済'],
       ['needs_review', '要確認'],
       ['source_changed', '変更あり'],
+      ['marked_or_temp', 'マーカ・仮記録'],
       ['glossary_issues', '用語警告'],
       ['hint_issues', '漏れ・混入'],
       ['warnings', '警告・不一致'],

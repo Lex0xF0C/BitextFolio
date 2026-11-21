@@ -27,6 +27,9 @@
   --status-changed-fg: #6d28d9;
   --status-changed-bg: #f5f3ff;
   --status-changed-border: #ddd6fe;
+  --marker-bg: #fef08a;
+  --marker-fg: #422006;
+  --marker-border: #eab308;
   --focus-ring: #2563eb;
   --font-sans: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Cascadia Mono", "Consolas", "SFMono-Regular", ui-monospace, monospace;
@@ -65,6 +68,9 @@ html.dark {
   --status-changed-fg: #c4b5fd;
   --status-changed-bg: #1e1038;
   --status-changed-border: #5b21b6;
+  --marker-bg: #713f12;
+  --marker-fg: #fef9c3;
+  --marker-border: #ca8a04;
   --focus-ring: #60a5fa;
 }
 
@@ -785,6 +791,21 @@ a:focus-visible,
   border-radius: 3px;
 }
 
+mark.sentence-marker {
+  background-color: var(--marker-bg);
+  color: var(--marker-fg);
+  border-bottom: 2px solid var(--marker-border);
+  border-radius: 2px;
+  padding: 1px 0;
+}
+
+.marker-clear-chip {
+  background-color: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  border-color: var(--status-warning-border);
+  font-weight: 600;
+}
+
 .sentence-actions {
   display: flex;
   align-items: center;
@@ -872,6 +893,13 @@ a:focus-visible,
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.btn.is-temp-checked {
+  background-color: var(--status-read-bg);
+  color: var(--status-read-fg);
+  border-color: var(--status-read-border);
+  font-weight: 600;
 }
 
 .status-label-text {
@@ -1059,6 +1087,12 @@ a:focus-visible,
 .context-menu-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background-color: var(--border-hairline);
+  margin: 4px 2px;
 }
 
 .quick-register-bar {

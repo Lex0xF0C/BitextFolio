@@ -3,6 +3,7 @@
  * Zero innerHTML usage with untrusted text.
  */
 
+import { splitTokensByMarkers } from '../core/markers.js';
 import { tokenizeInlineMarkup } from '../core/markup.js';
 
 export const STATUS_META = {
@@ -58,20 +59,25 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 /**
- * Safely renders inline emphasis/code tokens as DOM nodes.
+ * Safely renders inline emphasis/code tokens and optional marker highlights as DOM nodes.
  */
-export function renderRichSentenceFragment(rawText) {
+export function renderRichSentenceFragment(rawText, markers = []) {
   const frag = document.createDocumentFragment();
   const tokens = tokenizeInlineMarkup(rawText);
-  for (const token of tokens) {
-    if (token.type === 'em') {
-      frag.appendChild(el('em', { textContent: token.value }));
-    } else if (token.type === 'strong') {
-      frag.appendChild(el('strong', { textContent: token.value }));
-    } else if (token.type === 'code') {
-      frag.appendChild(el('code', { textContent: token.value }));
+  const segments = splitTokensByMarkers(tokens, markers);
+  for (const seg of segments) {
+    const innerNode = seg.marked
+      ? el('mark', { className: 'sentence-marker', textContent: seg.value })
+      : document.createTextNode(seg.value);
+
+    if (seg.type === 'em') {
+      frag.appendChild(el('em', {}, [innerNode]));
+    } else if (seg.type === 'strong') {
+      frag.appendChild(el('strong', {}, [innerNode]));
+    } else if (seg.type === 'code') {
+      frag.appendChild(el('code', {}, [innerNode]));
     } else {
-      frag.appendChild(document.createTextNode(token.value));
+      frag.appendChild(innerNode);
     }
   }
   return frag;
@@ -97,6 +103,15 @@ export function blockHasActiveHints(block, duplicateJaIndex = null, dismissedHin
   );
 }
 
+export function blockHasMarkersOrTempNoOmission(block) {
+  const hasTemp = (block.groups || []).some((g) => Boolean(g.tempNoOmission));
+  if (hasTemp) return true;
+  return (
+    (block.enSentences || []).some((s) => (s.markers || []).length > 0) ||
+    (block.jaSentences || []).some((s) => (s.markers || []).length > 0)
+  );
+}
+
 export function blockMatchesFilter(
   block,
   filterStatus,
@@ -109,6 +124,9 @@ export function blockMatchesFilter(
   const q = (searchQuery || '').trim().toLowerCase();
   const hasMatchingStatus = () => {
     if (filterStatus === 'all') return true;
+    if (filterStatus === 'marked_or_temp') {
+      return blockHasMarkersOrTempNoOmission(block);
+    }
     if (filterStatus === 'glossary_issues') {
       return blockHasGlossaryIssues(block, glossary, jaNormOptions);
     }

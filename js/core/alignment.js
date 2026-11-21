@@ -4,6 +4,11 @@
  * Zero DOM dependencies.
  */
 
+import {
+  mergeMarkerLists,
+  normalizeMarkerRanges,
+  remapMarkersOnSplit,
+} from './markers.js';
 import { stripInlineMarkup } from './markup.js';
 
 const NUMBER_TOKEN_RE = /\b\d+(?:[.,:-]\d+)*(?:r\d+)?\b/g;
@@ -28,12 +33,14 @@ export function nextLocalId(prefix) {
  * @param {'en'|'ja'} lang
  * @param {string} [id]
  */
-export function makeSentenceItem(rawText, lang, id) {
+export function makeSentenceItem(rawText, lang, id, markers = []) {
   const clean = String(rawText || '').trim();
+  const plainText = stripInlineMarkup(clean);
   return {
     id: id || nextLocalId(lang),
     rawText: clean,
-    plainText: stripInlineMarkup(clean),
+    plainText,
+    markers: normalizeMarkerRanges(markers, plainText.length),
   };
 }
 
@@ -115,6 +122,7 @@ export function createInitialGroups(enSentences, jaSentences, blockId = 'blk') {
       status: 'unread',
       memo: '',
       previousMemoNote: '',
+      tempNoOmission: false,
       confirmedAlignment: !countMismatch && enIds.length === 1 && jaIds.length === 1,
     });
   }
@@ -201,6 +209,7 @@ export function suggestHintedGroups(enSentences, jaSentences, blockId = 'blk') {
     status: 'unread',
     memo: '',
     previousMemoNote: '',
+    tempNoOmission: false,
     confirmedAlignment: false,
   }));
 }
@@ -222,8 +231,17 @@ export function splitSentenceInBlock(block, lang, sentenceId, splitOffset) {
   const rightRaw = target.rawText.slice(offset).trim();
   if (!leftRaw || !rightRaw) return block;
 
-  const leftItem = makeSentenceItem(leftRaw, lang, target.id);
-  const rightItem = makeSentenceItem(rightRaw, lang);
+  const leftPlainLen = stripInlineMarkup(leftRaw).length;
+  const rightPlainLen = stripInlineMarkup(rightRaw).length;
+  const { leftMarkers, rightMarkers } = remapMarkersOnSplit(
+    target.markers,
+    target.plainText.length,
+    leftPlainLen,
+    rightPlainLen,
+  );
+
+  const leftItem = makeSentenceItem(leftRaw, lang, target.id, leftMarkers);
+  const rightItem = makeSentenceItem(rightRaw, lang, undefined, rightMarkers);
 
   const nextSentences = [
     ...sentences.slice(0, idx),
@@ -268,7 +286,15 @@ export function mergeSentenceWithNextInBlock(block, lang, sentenceId) {
   const next = sentences[idx + 1];
   const joiner = lang === 'en' ? ' ' : '';
   const mergedRaw = `${current.rawText}${joiner}${next.rawText}`.trim();
-  const mergedItem = makeSentenceItem(mergedRaw, lang, current.id);
+  const mergedPlainLen = stripInlineMarkup(mergedRaw).length;
+  const mergedMarkers = mergeMarkerLists(
+    current.markers,
+    next.markers,
+    current.plainText.length + joiner.length,
+    mergedPlainLen,
+    current.plainText.length,
+  );
+  const mergedItem = makeSentenceItem(mergedRaw, lang, current.id, mergedMarkers);
 
   const nextSentences = [
     ...sentences.slice(0, idx),
@@ -316,6 +342,7 @@ export function moveSentenceToGroup(block, lang, sentenceId, targetGroupId) {
       status: 'unread',
       memo: '',
       previousMemoNote: '',
+      tempNoOmission: false,
       confirmedAlignment: false,
     };
     nextGroups.splice(insertAt, 0, newGroup);
@@ -363,5 +390,29 @@ export function syncBlockMeta(block) {
   return {
     ...block,
     warnings: structural,
+  };
+}
+
+/**
+ * Updates marker ranges for a specific sentence inside a block.
+ */
+export function updateSentenceMarkersInBlock(block, lang, sentenceId, updaterFn) {
+  if (!block || typeof updaterFn !== 'function') return block;
+  const listKey = lang === 'en' ? 'enSentences' : 'jaSentences';
+  const sentences = block[listKey] || [];
+  let changed = false;
+  const nextSentences = sentences.map((s) => {
+    if (s.id !== sentenceId) return s;
+    changed = true;
+    const nextMarkers = normalizeMarkerRanges(
+      updaterFn(s.markers || [], s.plainText.length),
+      s.plainText.length,
+    );
+    return { ...s, markers: nextMarkers };
+  });
+  if (!changed) return block;
+  return {
+    ...block,
+    [listKey]: nextSentences,
   };
 }
