@@ -3,7 +3,7 @@
  * Zero innerHTML usage with untrusted text.
  */
 
-import { splitTokensByHighlights } from '../core/markers.js';
+import { sliceTokensByRange, splitTokensByHighlights } from '../core/markers.js';
 import { tokenizeInlineMarkup } from '../core/markup.js';
 
 export const STATUS_META = {
@@ -79,6 +79,31 @@ export function renderRichSentenceFragment(rawText, markers = [], clauseHighligh
     } else if (seg.clauseState === 'pending') {
       innerNode = el('span', { className: 'clause-span is-pending' }, [innerNode]);
     }
+
+    if (seg.type === 'em') {
+      frag.appendChild(el('em', {}, [innerNode]));
+    } else if (seg.type === 'strong') {
+      frag.appendChild(el('strong', {}, [innerNode]));
+    } else if (seg.type === 'code') {
+      frag.appendChild(el('code', {}, [innerNode]));
+    } else {
+      frag.appendChild(innerNode);
+    }
+  }
+  return frag;
+}
+
+/**
+ * Safely renders a sentence slice [spanStart, spanEnd) with inline markup and sentence markers.
+ */
+export function renderClauseFragment(rawText, markers = [], spanStart = 0, spanEnd = 0) {
+  const frag = document.createDocumentFragment();
+  const tokens = tokenizeInlineMarkup(rawText);
+  const segments = sliceTokensByRange(tokens, markers, spanStart, spanEnd);
+  for (const seg of segments) {
+    const innerNode = seg.marked
+      ? el('mark', { className: 'sentence-marker', textContent: seg.value })
+      : document.createTextNode(seg.value);
 
     if (seg.type === 'em') {
       frag.appendChild(el('em', {}, [innerNode]));

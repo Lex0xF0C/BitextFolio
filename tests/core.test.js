@@ -26,6 +26,7 @@ import {
   hasMarkerOverlap,
   isRangeFullyMarked,
   removeMarkerRange,
+  sliceTokensByRange,
   splitTokensByHighlights,
   splitTokensByMarkers,
 } from '../js/core/markers.js';
@@ -553,5 +554,15 @@ test('Clause-level comparison pairs track waiting pair, coverage, highlights, ch
   }).block;
   blk = clearClausePairsInGroup(blk, gid);
   assert.equal(blk.groups[0].clausePairs.length, 0);
+
+  // sliceTokensByRange maps sentence markers and inline markup into clause span offsets
+  const sliceTokens = tokenizeInlineMarkup('Verify *anomaly* handling daily.');
+  const sliced = sliceTokensByRange(sliceTokens, [{ start: 7, end: 12 }], 5, 23);
+  assert.deepEqual(sliced, [
+    { type: 'text', value: 'y ', marked: false },
+    { type: 'em', value: 'anoma', marked: true },
+    { type: 'em', value: 'ly', marked: false },
+    { type: 'text', value: ' handling', marked: false },
+  ]);
 });
 

@@ -952,6 +952,13 @@ mark.sentence-marker {
   font-weight: 600;
 }
 
+.btn.is-marker-active {
+  background-color: var(--marker-bg);
+  color: var(--marker-fg);
+  border-color: var(--marker-border);
+  font-weight: 600;
+}
+
 /* Clause-level Ad-hoc Comparison Workbench */
 .clause-workbench {
   padding: 10px 18px 14px;
@@ -1095,6 +1102,25 @@ mark.sentence-marker {
   font-size: 14px;
   line-height: 1.6;
   word-break: break-word;
+}
+
+.clause-side-text em {
+  font-style: italic;
+  background-color: var(--bg-subtle);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+.clause-side-text strong {
+  font-weight: 700;
+}
+
+.clause-side-text code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background-color: var(--bg-subtle);
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .clause-side-actions {

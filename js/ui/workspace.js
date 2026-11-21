@@ -22,6 +22,7 @@ import {
   blockHasGlossaryIssues,
   blockMatchesFilter,
   el,
+  renderClauseFragment,
   renderRichSentenceFragment,
   STATUS_META,
   WARNING_LABELS,
@@ -648,6 +649,10 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       }
     }
 
+    showContextMenuAt(e, items);
+  }
+
+  function showContextMenuAt(e, items) {
     contextMenuEl.textContent = '';
     for (const item of items) contextMenuEl.appendChild(item);
     contextMenuEl.classList.remove('is-hidden');
@@ -659,6 +664,128 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     const top = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 12));
     contextMenuEl.style.left = `${left}px`;
     contextMenuEl.style.top = `${top}px`;
+  }
+
+  function handleClauseContextMenu(e, block, group, lang, span, sentenceObj) {
+    const tag = e.target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') {
+      return;
+    }
+    e.preventDefault();
+    closeContextMenu();
+
+    const boxEl = e.currentTarget;
+    const clauseTextEl = boxEl?.querySelector?.('.clause-side-text') || null;
+    const selRange = getSelectionOffsetsInSentence(clauseTextEl);
+    const spanStart = Number(span.start) || 0;
+    const spanEnd = Number(span.end) || spanStart + String(span.text || '').length;
+
+    const items = [];
+    const headerLabel = selRange
+      ? `選択部分: 「${truncateLabel(selRange.text, 28)}」`
+      : `${lang === 'en' ? '英文節' : '和文節'}: 「${truncateLabel(span.text, 28)}」`;
+
+    items.push(el('div', { className: 'context-menu-header', textContent: headerLabel }));
+
+    if (selRange) {
+      const absStart = spanStart + selRange.start;
+      const absEnd = spanStart + selRange.end;
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item is-primary',
+          textContent: '選択範囲をマーカ（確認済の目印） [H]',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.addSentenceMarker(
+              block.id,
+              lang,
+              sentenceObj.id,
+              absStart,
+              absEnd,
+              '選択範囲にマーカを付けました [H]',
+            );
+          },
+        }),
+      );
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: '文頭〜選択末尾までをマーカ [Shift+H]',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.addSentenceMarker(
+              block.id,
+              lang,
+              sentenceObj.id,
+              0,
+              absEnd,
+              '文頭〜選択位置までマーカを付けました [Shift+H]',
+            );
+          },
+        }),
+      );
+      if (hasMarkerOverlap(sentenceObj.markers, absStart, absEnd)) {
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            textContent: '選択範囲のマーカを解除',
+            onClick: () => {
+              closeContextMenu();
+              clearBrowserSelection();
+              store.removeSentenceMarker(block.id, lang, sentenceObj.id, absStart, absEnd);
+            },
+          }),
+        );
+      }
+      items.push(el('div', { className: 'context-menu-divider', role: 'separator' }));
+    }
+
+    const wholeMarked = isRangeFullyMarked(sentenceObj.markers, spanStart, spanEnd);
+    items.push(
+      el('button', {
+        type: 'button',
+        className: `context-menu-item${!selRange ? ' is-primary' : ''}`,
+        textContent: wholeMarked ? 'この文節のマーカを解除' : 'この文節全体をマーカ',
+        onClick: () => {
+          closeContextMenu();
+          clearBrowserSelection();
+          if (wholeMarked) {
+            store.removeSentenceMarker(block.id, lang, sentenceObj.id, spanStart, spanEnd);
+          } else {
+            store.addSentenceMarker(
+              block.id,
+              lang,
+              sentenceObj.id,
+              spanStart,
+              spanEnd,
+              '文節全体にマーカを付けました',
+            );
+          }
+        },
+      }),
+    );
+
+    if ((sentenceObj.markers || []).length > 0) {
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: 'この文のマーカをすべて解除',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.clearSentenceMarkers(block.id, lang, sentenceObj.id);
+          },
+        }),
+      );
+    }
+
+    showContextMenuAt(e, items);
   }
 
   function getFlatFilteredGroups() {
@@ -1531,11 +1658,93 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             ]),
           );
 
-          const enBox = el('div', { className: 'clause-side-box' });
+          const triggerClauseMarkerAction = (sideLang, span, sentenceObj, clauseTextEl) => {
+            if (!sentenceObj) return;
+            const selRange = getSelectionOffsetsInSentence(clauseTextEl);
+            if (selRange) {
+              const absStart = (Number(span.start) || 0) + selRange.start;
+              const absEnd = (Number(span.start) || 0) + selRange.end;
+              clearBrowserSelection();
+              if (isRangeFullyMarked(sentenceObj.markers, absStart, absEnd)) {
+                store.removeSentenceMarker(block.id, sideLang, sentenceObj.id, absStart, absEnd);
+              } else {
+                store.addSentenceMarker(
+                  block.id,
+                  sideLang,
+                  sentenceObj.id,
+                  absStart,
+                  absEnd,
+                  '選択範囲にマーカを付けました',
+                );
+              }
+              return;
+            }
+            const spStart = Number(span.start) || 0;
+            const spEnd = Number(span.end) || spStart + String(span.text || '').length;
+            if (isRangeFullyMarked(sentenceObj.markers, spStart, spEnd)) {
+              store.removeSentenceMarker(block.id, sideLang, sentenceObj.id, spStart, spEnd);
+            } else {
+              store.addSentenceMarker(
+                block.id,
+                sideLang,
+                sentenceObj.id,
+                spStart,
+                spEnd,
+                '文節全体にマーカを付けました',
+              );
+            }
+          };
+
+          const enSentenceObj = pair.enSpan ? enMap.get(pair.enSpan.sentenceId)?.item || null : null;
+          const enBox = el('div', {
+            className: 'clause-side-box',
+            onContextmenu: (ev) => {
+              if (pair.enSpan && enSentenceObj) {
+                handleClauseContextMenu(ev, block, group, 'en', pair.enSpan, enSentenceObj);
+              }
+            },
+          });
           if (pair.enSpan) {
-            enBox.appendChild(el('div', { className: 'clause-side-text', textContent: pair.enSpan.text }));
+            const enClauseTextEl = el('div', {
+              className: 'clause-side-text',
+              dataset: {
+                blockId: block.id,
+                groupId: group.id,
+                sentenceId: pair.enSpan.sentenceId,
+                lang: 'en',
+                spanStart: pair.enSpan.start,
+                spanEnd: pair.enSpan.end,
+              },
+            });
+            if (enSentenceObj) {
+              enClauseTextEl.appendChild(
+                renderClauseFragment(
+                  enSentenceObj.rawText,
+                  enSentenceObj.markers,
+                  pair.enSpan.start,
+                  pair.enSpan.end,
+                ),
+              );
+            } else {
+              enClauseTextEl.textContent = pair.enSpan.text;
+            }
+            const enClauseMarked = enSentenceObj
+              ? isRangeFullyMarked(enSentenceObj.markers, pair.enSpan.start, pair.enSpan.end)
+              : false;
+            enBox.appendChild(enClauseTextEl);
             enBox.appendChild(
               el('div', { className: 'clause-side-actions' }, [
+                enSentenceObj
+                  ? el('button', {
+                      type: 'button',
+                      className: `btn btn-xs${enClauseMarked ? ' is-marker-active' : ' btn-ghost'}`,
+                      textContent: enClauseMarked ? '✓ 文節マーカ済 ×' : '文節マーカ [H]',
+                      title: '文字をドラッグ選択していれば選択範囲を、未選択ならこの文節全体をマーカ／解除します（H / 右クリックも可）',
+                      onMousedown: (ev) => ev.preventDefault(),
+                      onClick: () =>
+                        triggerClauseMarkerAction('en', pair.enSpan, enSentenceObj, enClauseTextEl),
+                    })
+                  : null,
                 el('button', {
                   type: 'button',
                   className: 'btn btn-ghost btn-xs',
@@ -1563,12 +1772,57 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             );
           }
 
-          const jaBox = el('div', { className: 'clause-side-box' });
+          const jaSentenceObj = pair.jaSpan ? jaMap.get(pair.jaSpan.sentenceId)?.item || null : null;
+          const jaBox = el('div', {
+            className: 'clause-side-box',
+            onContextmenu: (ev) => {
+              if (pair.jaSpan && jaSentenceObj) {
+                handleClauseContextMenu(ev, block, group, 'ja', pair.jaSpan, jaSentenceObj);
+              }
+            },
+          });
           if (pair.jaSpan) {
-            jaBox.appendChild(el('div', { className: 'clause-side-text', textContent: pair.jaSpan.text }));
+            const jaClauseTextEl = el('div', {
+              className: 'clause-side-text',
+              dataset: {
+                blockId: block.id,
+                groupId: group.id,
+                sentenceId: pair.jaSpan.sentenceId,
+                lang: 'ja',
+                spanStart: pair.jaSpan.start,
+                spanEnd: pair.jaSpan.end,
+              },
+            });
+            if (jaSentenceObj) {
+              jaClauseTextEl.appendChild(
+                renderClauseFragment(
+                  jaSentenceObj.rawText,
+                  jaSentenceObj.markers,
+                  pair.jaSpan.start,
+                  pair.jaSpan.end,
+                ),
+              );
+            } else {
+              jaClauseTextEl.textContent = pair.jaSpan.text;
+            }
+            const jaClauseMarked = jaSentenceObj
+              ? isRangeFullyMarked(jaSentenceObj.markers, pair.jaSpan.start, pair.jaSpan.end)
+              : false;
+            jaBox.appendChild(jaClauseTextEl);
             const targetJaId = pair.jaSpan.sentenceId || jaItems[0]?.id;
             jaBox.appendChild(
               el('div', { className: 'clause-side-actions' }, [
+                jaSentenceObj
+                  ? el('button', {
+                      type: 'button',
+                      className: `btn btn-xs${jaClauseMarked ? ' is-marker-active' : ' btn-ghost'}`,
+                      textContent: jaClauseMarked ? '✓ 文節マーカ済 ×' : '文節マーカ [H]',
+                      title: '文字をドラッグ選択していれば選択範囲を、未選択ならこの文節全体をマーカ／解除します（H / 右クリックも可）',
+                      onMousedown: (ev) => ev.preventDefault(),
+                      onClick: () =>
+                        triggerClauseMarkerAction('ja', pair.jaSpan, jaSentenceObj, jaClauseTextEl),
+                    })
+                  : null,
                 el('button', {
                   type: 'button',
                   className: 'btn btn-ghost btn-xs',
@@ -2484,6 +2738,24 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     return null;
   }
 
+  function findSelectedClauseElement(range) {
+    const pickClosest = (node) => {
+      if (!node) return null;
+      const elNode = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      return elNode?.closest?.('.clause-side-text') || null;
+    };
+    const fromStart = pickClosest(range.startContainer);
+    if (fromStart && blocksList.contains(fromStart)) return fromStart;
+    const fromEnd = pickClosest(range.endContainer);
+    if (fromEnd && blocksList.contains(fromEnd)) return fromEnd;
+    if (typeof range.intersectsNode === 'function') {
+      for (const item of blocksList.querySelectorAll('.clause-side-text')) {
+        if (range.intersectsNode(item)) return item;
+      }
+    }
+    return null;
+  }
+
   function markCurrentSelection({ fromStart = false } = {}) {
     const proj = store.getActiveProject();
     if (!proj) return false;
@@ -2495,19 +2767,40 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
 
     const range = sel.getRangeAt(0);
     const sentenceItemEl = findSelectedSentenceElement(range);
-    if (!sentenceItemEl) {
-      store.showToast('対訳文の中をドラッグ選択してから H キーを押してください');
-      return false;
+    let sentenceId = null;
+    let lang = null;
+    let blockId = null;
+    let groupId = null;
+    let absStart = 0;
+    let absEnd = 0;
+
+    if (sentenceItemEl) {
+      const sentenceTextEl = sentenceItemEl.querySelector('.sentence-text');
+      const selRange = getSelectionOffsetsInSentence(sentenceTextEl);
+      if (!selRange) return false;
+      sentenceId = sentenceItemEl.dataset.sentenceId;
+      lang = sentenceItemEl.dataset.lang;
+      blockId = sentenceItemEl.closest('.block-section')?.dataset?.blockId;
+      groupId = sentenceItemEl.closest('.alignment-group')?.dataset?.groupId;
+      absStart = selRange.start;
+      absEnd = selRange.end;
+    } else {
+      const clauseTextEl = findSelectedClauseElement(range);
+      if (!clauseTextEl) {
+        store.showToast('対訳文または文節対比の中をドラッグ選択してから H キーを押してください');
+        return false;
+      }
+      const selRange = getSelectionOffsetsInSentence(clauseTextEl);
+      if (!selRange) return false;
+      const spanOffset = Number(clauseTextEl.dataset.spanStart) || 0;
+      sentenceId = clauseTextEl.dataset.sentenceId;
+      lang = clauseTextEl.dataset.lang;
+      blockId = clauseTextEl.dataset.blockId || clauseTextEl.closest('.block-section')?.dataset?.blockId;
+      groupId = clauseTextEl.dataset.groupId || clauseTextEl.closest('.alignment-group')?.dataset?.groupId;
+      absStart = spanOffset + selRange.start;
+      absEnd = spanOffset + selRange.end;
     }
 
-    const sentenceTextEl = sentenceItemEl.querySelector('.sentence-text');
-    const selRange = getSelectionOffsetsInSentence(sentenceTextEl);
-    if (!selRange) return false;
-
-    const sentenceId = sentenceItemEl.dataset.sentenceId;
-    const lang = sentenceItemEl.dataset.lang;
-    const blockId = sentenceItemEl.closest('.block-section')?.dataset?.blockId;
-    const groupId = sentenceItemEl.closest('.alignment-group')?.dataset?.groupId;
     const block = proj.blocks.find((b) => b.id === blockId);
     if (!block) return false;
     const sentenceList = lang === 'en' ? block.enSentences : block.jaSentences;
@@ -2526,21 +2819,21 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         lang,
         sentenceObj.id,
         0,
-        selRange.end,
+        absEnd,
         '文頭〜選択位置までマーカを付けました [Shift+H]',
       );
       return true;
     }
 
-    if (isRangeFullyMarked(sentenceObj.markers, selRange.start, selRange.end)) {
-      store.removeSentenceMarker(block.id, lang, sentenceObj.id, selRange.start, selRange.end);
+    if (isRangeFullyMarked(sentenceObj.markers, absStart, absEnd)) {
+      store.removeSentenceMarker(block.id, lang, sentenceObj.id, absStart, absEnd);
     } else {
       store.addSentenceMarker(
         block.id,
         lang,
         sentenceObj.id,
-        selRange.start,
-        selRange.end,
+        absStart,
+        absEnd,
         '選択範囲にマーカを付けました [H]',
       );
     }

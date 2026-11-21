@@ -289,3 +289,45 @@ export function splitTokensByHighlights(tokens, layers = {}) {
 
   return out;
 }
+
+/**
+ * Slices inline-markup + marker tokens to a sub-interval [rangeStart, rangeEnd)
+ * relative to the sentence's plainText, preserving markup and marker states.
+ * @param {Array<{type: string, value: string}>} tokens
+ * @param {Array<{start: number, end: number}>} markers
+ * @param {number} rangeStart
+ * @param {number} rangeEnd
+ * @returns {Array<{type: string, value: string, marked: boolean}>}
+ */
+export function sliceTokensByRange(tokens, markers, rangeStart, rangeEnd) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return [];
+  const rs = Math.max(0, Math.floor(Number(rangeStart) || 0));
+  const re = Math.max(rs, Math.floor(Number(rangeEnd) || 0));
+  if (re <= rs) return [];
+
+  const markedTokens = splitTokensByMarkers(tokens, markers);
+  const out = [];
+  let cursor = 0;
+
+  for (const seg of markedTokens) {
+    const val = seg.value || '';
+    const segStart = cursor;
+    const segEnd = cursor + val.length;
+    cursor = segEnd;
+    if (val.length === 0) continue;
+    if (segEnd <= rs || segStart >= re) continue;
+
+    const a = Math.max(segStart, rs);
+    const b = Math.min(segEnd, re);
+    if (b > a) {
+      out.push({
+        type: seg.type,
+        value: val.slice(a - segStart, b - segStart),
+        marked: Boolean(seg.marked),
+      });
+    }
+  }
+
+  return out;
+}
+
