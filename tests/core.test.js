@@ -12,6 +12,7 @@ import {
   addMarkerRange,
   computeMarkerCoveragePercent,
   hasMarkerOverlap,
+  isRangeFullyMarked,
   removeMarkerRange,
   splitTokensByMarkers,
 } from '../js/core/markers.js';
@@ -410,6 +411,8 @@ test('Sentence marker ranges normalize, subtract, split tokens, and survive sent
   ranges = addMarkerRange(ranges, 10, 25, 50);
   assert.deepEqual(ranges, [{ start: 0, end: 25 }]);
   assert.equal(hasMarkerOverlap(ranges, 20, 30), true);
+  assert.equal(isRangeFullyMarked(ranges, 5, 20), true);
+  assert.equal(isRangeFullyMarked(ranges, 20, 30), false);
   assert.equal(computeMarkerCoveragePercent(ranges, 50), 50);
 
   // Subtracting a middle range splits the interval cleanly

@@ -82,6 +82,18 @@ export function hasMarkerOverlap(ranges, start, end) {
 }
 
 /**
+ * Returns true if the entire interval [start, end] is covered by existing markers.
+ */
+export function isRangeFullyMarked(ranges, start, end) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return false;
+  const s = Math.floor(Number(start));
+  const e = Math.floor(Number(end));
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return false;
+  const norm = normalizeMarkerRanges(ranges, Math.max(e, ...ranges.map((r) => Number(r?.end) || 0)));
+  return norm.some((r) => r.start <= s && r.end >= e);
+}
+
+/**
  * Computes percentage of plainText covered by markers (0..100).
  */
 export function computeMarkerCoveragePercent(ranges, plainLength) {

@@ -555,6 +555,8 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
     ];
 
     const rows = [
+      ['h', '選択中の文字列にマーカを付ける（既マーカ範囲なら解除）'],
+      ['Shift + h', '文頭〜選択範囲の末尾までをマーカする'],
       ['j / ↓', '次の文グループへ移動'],
       ['k / ↑', '前の文グループへ移動'],
       ['v / Enter', '選択中グループを「確認済」にする'],

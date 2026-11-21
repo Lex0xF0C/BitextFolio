@@ -59,6 +59,18 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (e.ctrlKey || e.metaKey || e.altKey) {
+    return;
+  }
+
+  const keyLower = e.key.toLowerCase();
+
+  if (keyLower === 'h') {
+    e.preventDefault();
+    workspace.markCurrentSelection({ fromStart: e.shiftKey });
+    return;
+  }
+
   if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
     e.preventDefault();
     store.openModal('shortcuts');

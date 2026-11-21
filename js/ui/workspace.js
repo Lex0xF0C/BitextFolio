@@ -5,7 +5,11 @@
 import { computeGroupHints } from '../core/alignment.js';
 import { checkGroupGlossary } from '../core/glossary.js';
 import { buildDuplicateJaIndex, detectGroupHints } from '../core/hints.js';
-import { computeMarkerCoveragePercent, hasMarkerOverlap } from '../core/markers.js';
+import {
+  computeMarkerCoveragePercent,
+  hasMarkerOverlap,
+  isRangeFullyMarked,
+} from '../core/markers.js';
 import { extractJapaneseCandidateTerms, findTmMatches } from '../core/tm.js';
 import {
   blockHasActiveHints,
@@ -378,7 +382,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         el('button', {
           type: 'button',
           className: 'context-menu-item is-primary',
-          textContent: '選択範囲をマーカ（確認済の目印）',
+          textContent: '選択範囲をマーカ（確認済の目印） [H]',
           onClick: () => {
             closeContextMenu();
             clearBrowserSelection();
@@ -397,7 +401,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         el('button', {
           type: 'button',
           className: 'context-menu-item',
-          textContent: '文頭〜選択末尾までをマーカ',
+          textContent: '文頭〜選択末尾までをマーカ [Shift+H]',
           onClick: () => {
             closeContextMenu();
             clearBrowserSelection();
@@ -1891,11 +1895,93 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     }
   }
 
+  function findSelectedSentenceElement(range) {
+    const pickClosest = (node) => {
+      if (!node) return null;
+      const elNode = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      return elNode?.closest?.('.sentence-item') || null;
+    };
+    const fromStart = pickClosest(range.startContainer);
+    if (fromStart && blocksList.contains(fromStart)) return fromStart;
+    const fromEnd = pickClosest(range.endContainer);
+    if (fromEnd && blocksList.contains(fromEnd)) return fromEnd;
+    if (typeof range.intersectsNode === 'function') {
+      for (const item of blocksList.querySelectorAll('.sentence-item')) {
+        if (range.intersectsNode(item)) return item;
+      }
+    }
+    return null;
+  }
+
+  function markCurrentSelection({ fromStart = false } = {}) {
+    const proj = store.getActiveProject();
+    if (!proj) return false;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      store.showToast('文中の文字をドラッグ選択してから H キーを押してください');
+      return false;
+    }
+
+    const range = sel.getRangeAt(0);
+    const sentenceItemEl = findSelectedSentenceElement(range);
+    if (!sentenceItemEl) {
+      store.showToast('対訳文の中をドラッグ選択してから H キーを押してください');
+      return false;
+    }
+
+    const sentenceTextEl = sentenceItemEl.querySelector('.sentence-text');
+    const selRange = getSelectionOffsetsInSentence(sentenceTextEl);
+    if (!selRange) return false;
+
+    const sentenceId = sentenceItemEl.dataset.sentenceId;
+    const lang = sentenceItemEl.dataset.lang;
+    const blockId = sentenceItemEl.closest('.block-section')?.dataset?.blockId;
+    const groupId = sentenceItemEl.closest('.alignment-group')?.dataset?.groupId;
+    const block = proj.blocks.find((b) => b.id === blockId);
+    if (!block) return false;
+    const sentenceList = lang === 'en' ? block.enSentences : block.jaSentences;
+    const sentenceObj = sentenceList.find((s) => s.id === sentenceId);
+    if (!sentenceObj) return false;
+
+    if (groupId) {
+      store.state.selectedGroupId = groupId;
+    }
+    closeContextMenu();
+    clearBrowserSelection();
+
+    if (fromStart) {
+      store.addSentenceMarker(
+        block.id,
+        lang,
+        sentenceObj.id,
+        0,
+        selRange.end,
+        '文頭〜選択位置までマーカを付けました [Shift+H]',
+      );
+      return true;
+    }
+
+    if (isRangeFullyMarked(sentenceObj.markers, selRange.start, selRange.end)) {
+      store.removeSentenceMarker(block.id, lang, sentenceObj.id, selRange.start, selRange.end);
+    } else {
+      store.addSentenceMarker(
+        block.id,
+        lang,
+        sentenceObj.id,
+        selRange.start,
+        selRange.end,
+        '選択範囲にマーカを付けました [H]',
+      );
+    }
+    return true;
+  }
+
   return {
     modalRoot,
     render,
     stepSelectedGroup,
     scrollToBlockOrGroup,
     jumpToLastFocused,
+    markCurrentSelection,
   };
 }
