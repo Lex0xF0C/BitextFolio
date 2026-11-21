@@ -566,3 +566,104 @@ test('Clause-level comparison pairs track waiting pair, coverage, highlights, ch
   ]);
 });
 
+test('Japanese translation splitting and import handle bullets without spaces, fullwidth periods, halfwidth !/?, blank-line paragraphs, URLs, and BOM', () => {
+  assert.deepEqual(
+    splitJapaneseSentences('・最初の項目\n・2番目の項目\n・3番目の項目'),
+    ['・最初の項目', '・2番目の項目', '・3番目の項目'],
+  );
+  assert.deepEqual(
+    splitJapaneseSentences('（1）最初の項目\n（2）2番目の項目'),
+    ['（1）最初の項目', '（2）2番目の項目'],
+  );
+  assert.deepEqual(
+    splitJapaneseSentences('①最初の項目\n②2番目の項目'),
+    ['①最初の項目', '②2番目の項目'],
+  );
+  assert.deepEqual(
+    splitJapaneseSentences('1．最初の項目\n2．2番目の項目'),
+    ['1．最初の項目', '2．2番目の項目'],
+  );
+
+  // Fullwidth periods (not decimals), safe halfwidth !/?, and multi-paragraph headings
+  assert.deepEqual(
+    splitJapaneseSentences('第2．0版の説明です．次の文です．'),
+    ['第2．0版の説明です．', '次の文です．'],
+  );
+  assert.deepEqual(
+    splitJapaneseSentences('本当に実行しますか? はい、実行します。Yahoo! JAPANも保持する。'),
+    ['本当に実行しますか?', 'はい、実行します。', 'Yahoo! JAPANも保持する。'],
+  );
+  assert.deepEqual(
+    splitJapaneseSentences('第1章 概要\n\nシステムは異常を検知する。通知を送信する。'),
+    ['第1章 概要', 'システムは異常を検知する。', '通知を送信する。'],
+  );
+
+  // Language classifier ignores URLs and classifies short JA headings accurately
+  assert.equal(
+    classifyLanguage('URLは https://example.com/search?q=test&lang=ja です。次の文。').lang,
+    'ja',
+  );
+  assert.equal(classifyLanguage('TLS/HTTP2 の設定').lang, 'ja');
+
+  // BOM stripping on block import & preserving list newlines on group insertion
+  const bomBlocks = splitIntoRawBlocks('\uFEFFFirst English item.\nSecond English item.\n\n\uFEFF・最初の項目\n・2番目の項目');
+  assert.equal(bomBlocks.length, 2);
+  assert.equal(bomBlocks[0].rawText.startsWith('\uFEFF'), false);
+  assert.equal(bomBlocks[1].effectiveLang, 'ja');
+
+  const enOnly = parseDocumentBlocks('First bullet.\nSecond bullet.', { inputMode: 'english_only' });
+  const filled = updateBlockJapaneseText(enOnly[0], '\uFEFF・1つ目の項目\n・2つ目の項目');
+  assert.equal(filled.jaSentences.length, 2);
+  assert.ok(!filled.warnings.includes('UNMATCHED_COUNT'));
+
+  const editedList = updateSentenceTextInBlock(filled, 'ja', filled.jaSentences[0].id, '・1つ目の項目（修正）');
+  assert.equal(editedList.jaRaw, '・1つ目の項目（修正）\n・2つ目の項目');
+});
+
+test('Single numbered clauses split sentences automatically and splitInsideList handles multi-clause legal paragraphs', () => {
+  // Single (1) paragraph with multiple sentences always splits on sentence boundaries
+  assert.deepEqual(
+    splitJapaneseSentences('（1）事業者は当局へ通知しなければならない。報告書には影響範囲を含めなければならない。'),
+    ['（1）事業者は当局へ通知しなければならない。', '報告書には影響範囲を含めなければならない。'],
+  );
+  assert.deepEqual(
+    splitEnglishSentences('(1) The operator shall notify the authority. The report shall include details.'),
+    ['(1) The operator shall notify the authority.', 'The report shall include details.'],
+  );
+
+  // Leading item number "1." / "1．" is preserved with its sentence instead of splitting into "1." alone
+  assert.deepEqual(
+    splitEnglishSentences('1. First requirement applies immediately. Additional logs are required.'),
+    ['1. First requirement applies immediately.', 'Additional logs are required.'],
+  );
+  assert.deepEqual(
+    splitJapaneseSentences('1．最初の要件は直ちに適用される。追加ログが必要となる。'),
+    ['1．最初の要件は直ちに適用される。', '追加ログが必要となる。'],
+  );
+
+  // Multi-clause legal block toggles cleanly between line-based items and sentence-level splitting
+  const legalEn = '(1) First clause begins. First clause continues.\n(2) Second clause begins. Second clause continues.';
+  const legalJa = '（1）第1項の文A。第1項の文B。\n（2）第2項の文A。第2項の文B。';
+  assert.equal(splitEnglishSentences(legalEn, { splitInsideList: false }).length, 2);
+  assert.equal(splitJapaneseSentences(legalJa, { splitInsideList: false }).length, 2);
+  assert.deepEqual(splitEnglishSentences(legalEn, { splitInsideList: true }), [
+    '(1) First clause begins.',
+    'First clause continues.',
+    '(2) Second clause begins.',
+    'Second clause continues.',
+  ]);
+  assert.deepEqual(splitJapaneseSentences(legalJa, { splitInsideList: true }), [
+    '（1）第1項の文A。',
+    '第1項の文B。',
+    '（2）第2項の文A。',
+    '第2項の文B。',
+  ]);
+
+  const blk = buildAlignmentBlock(legalEn, legalJa, 0, { splitInsideList: true });
+  assert.equal(blk.enSentences.length, 4);
+  assert.equal(blk.jaSentences.length, 4);
+  assert.equal(blk.groups.length, 4);
+});
+
+
+

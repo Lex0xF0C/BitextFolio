@@ -3,6 +3,7 @@
  */
 
 import { computeGroupHints } from '../core/alignment.js';
+import { isListBlock } from '../core/block-parser.js';
 import {
   collectSentenceClauseHighlights,
   computeClauseCoverage,
@@ -45,6 +46,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
   let rememberedJaSelection = null; // { groupId, text }
   let quickRegisterState = null; // { mode: 'tm' | 'glossary', blockId, groupId, enText, jaText, jaSuggestions }
   const unmatchedDrafts = new Map(); // `${groupId}:${lang}` -> string
+  const jaBlockDrafts = new Map(); // blockId -> string
   const showChunkHelperGroupIds = new Set();
 
   // Build persistent shell once so inputs (search, memo) never lose focus unnecessarily
@@ -1234,7 +1236,25 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         className: 'btn btn-xs',
         textContent: block.jaRaw ? '和文を編集' : '和文を入力',
         title: 'このブロックの日本語訳をまとめて入力・差し替えして文分割します',
-        onClick: () => store.toggleBlockJaEditor(block.id),
+        onClick: () => {
+          if (!block.jaRaw.trim()) {
+            const ta = blocksList.querySelector(
+              `textarea[data-ja-block-id="${CSS.escape(block.id)}"]`,
+            );
+            if (ta) ta.focus();
+            return;
+          }
+          const wasOpen = store.state.editingJaBlockIds.has(block.id);
+          store.toggleBlockJaEditor(block.id);
+          if (!wasOpen) {
+            requestAnimationFrame(() => {
+              const ta = blocksList.querySelector(
+                `textarea[data-ja-block-id="${CSS.escape(block.id)}"]`,
+              );
+              if (ta) ta.focus();
+            });
+          }
+        },
       }),
       block.enSentences.length !== block.jaSentences.length && block.jaSentences.length > 0
         ? el('button', {
@@ -1242,6 +1262,17 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             className: 'btn btn-xs',
             textContent: 'ヒントで自動整列',
             onClick: () => store.realignBlock(block.id, true),
+          })
+        : null,
+      isListBlock(block.enRaw) || isListBlock(block.jaRaw)
+        ? el('button', {
+            type: 'button',
+            className: 'btn btn-xs',
+            textContent: block.splitInsideList ? '項目行単位に戻す' : '項目・(1)内も文分割',
+            title: block.splitInsideList
+              ? 'このブロックを箇条書きとして1行1項目に戻して再整列します'
+              : 'このブロック内の (1)(2) や箇条書き行の中も、句点「。」やピリオドで文分割します',
+            onClick: () => store.realignBlock(block.id, false, !block.splitInsideList),
           })
         : null,
       el('button', {
@@ -1282,15 +1313,36 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
 
     const showJaEditor = !block.jaRaw.trim() || store.state.editingJaBlockIds.has(block.id);
     if (showJaEditor) {
+      const initialJaVal = jaBlockDrafts.has(block.id)
+        ? jaBlockDrafts.get(block.id)
+        : block.jaRaw || '';
+      const splitInsideCheck = el('input', {
+        type: 'checkbox',
+        checked: Boolean(block.splitInsideList ?? store.getActiveProject()?.splitInsideList),
+      });
+      const commitJaBlock = () => {
+        const val = jaInput.value;
+        if (!val.trim() && !block.jaRaw.trim()) {
+          store.showToast('日本語訳を入力・貼り付けしてください', true);
+          jaInput.focus();
+          return;
+        }
+        jaBlockDrafts.delete(block.id);
+        store.updateBlockJapanese(block.id, val, splitInsideCheck.checked);
+      };
       const jaInput = el('textarea', {
         className: 'ja-block-textarea',
-        value: block.jaRaw || '',
+        value: initialJaVal,
+        dataset: { jaBlockId: block.id },
         placeholder: 'この英語段落に対応する日本語訳を入力・貼り付けしてください（Ctrl+Enter で反映・文分割）...',
         'aria-label': `ブロック #${block.index + 1} の日本語訳入力`,
+        onInput: (e) => {
+          jaBlockDrafts.set(block.id, e.target.value);
+        },
         onKeydown: (e) => {
           if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
             e.preventDefault();
-            store.updateBlockJapanese(block.id, jaInput.value);
+            commitJaBlock();
           }
         },
       });
@@ -1309,14 +1361,24 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
               type: 'button',
               className: 'btn btn-primary btn-xs',
               textContent: '日本語を反映・文分割',
-              onClick: () => store.updateBlockJapanese(block.id, jaInput.value),
+              onClick: commitJaBlock,
             }),
+            el('label', {
+              className: 'checkbox-label',
+              title: '法律の条文の (1)(2) 項のように複数文を含む場合に、項目内の句点「。」でも文分割します',
+            }, [
+              splitInsideCheck,
+              document.createTextNode('条文の項・(1)(2)内も「。」で分割'),
+            ]),
             block.jaRaw.trim()
               ? el('button', {
                   type: 'button',
                   className: 'btn btn-xs',
                   textContent: '閉じる',
-                  onClick: () => store.toggleBlockJaEditor(block.id, false),
+                  onClick: () => {
+                    jaBlockDrafts.delete(block.id);
+                    store.toggleBlockJaEditor(block.id, false);
+                  },
                 })
               : null,
           ]),
@@ -2600,6 +2662,8 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       if (workspaceSig.projectId !== lastRenderedProjectId) {
         lastRenderedProjectId = workspaceSig.projectId;
         blockHeights.clear();
+        unmatchedDrafts.clear();
+        jaBlockDrafts.clear();
         blocksViewport.scrollTop = 0;
       }
 
@@ -2661,14 +2725,19 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         );
       }
 
-      // Preserve active memo, unmatched-input, sentence-edit, or clause-note focus across re-renders
+      // Preserve active memo, unmatched-input, ja-block-input, sentence-edit, or clause-note focus across re-renders
       const activeEl = document.activeElement;
       const activeMemoGroupId = activeEl?.dataset?.memoGroupId || null;
       const activeUnmatchedKey = activeEl?.dataset?.unmatchedInputKey || null;
+      const activeJaBlockId = activeEl?.dataset?.jaBlockId || null;
       const activeEditSentenceId = activeEl?.dataset?.editSentenceId || null;
       const activeClauseNoteId = activeEl?.dataset?.clauseNoteId || null;
       const hasTrackedInput =
-        activeMemoGroupId || activeUnmatchedKey || activeEditSentenceId || activeClauseNoteId;
+        activeMemoGroupId ||
+        activeUnmatchedKey ||
+        activeJaBlockId ||
+        activeEditSentenceId ||
+        activeClauseNoteId;
       const selectionStart = hasTrackedInput ? activeEl.selectionStart : null;
       const selectionEnd = hasTrackedInput ? activeEl.selectionEnd : null;
 
@@ -2688,6 +2757,8 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         restoreFocus(`textarea[data-memo-group-id="${CSS.escape(activeMemoGroupId)}"]`);
       } else if (activeUnmatchedKey) {
         restoreFocus(`textarea[data-unmatched-input-key="${CSS.escape(activeUnmatchedKey)}"]`);
+      } else if (activeJaBlockId) {
+        restoreFocus(`textarea[data-ja-block-id="${CSS.escape(activeJaBlockId)}"]`);
       } else if (activeEditSentenceId) {
         restoreFocus(`textarea[data-edit-sentence-id="${CSS.escape(activeEditSentenceId)}"]`);
       } else if (activeClauseNoteId) {

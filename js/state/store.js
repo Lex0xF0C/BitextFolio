@@ -279,12 +279,19 @@ export function createAppStore() {
       await setSetting('activeProjectId', found.id);
       notify();
     },
-    async createNewProject({ title, rawText, rawBlocks, inputMode = 'alternating' }) {
+    async createNewProject({
+      title,
+      rawText,
+      rawBlocks,
+      inputMode = 'alternating',
+      splitInsideList = false,
+    }) {
       const proj = createDocumentProject({
         title,
         rawText,
         rawBlocks,
         inputMode,
+        splitInsideList,
         abbreviations: state.abbreviations,
       });
       await saveProject(proj);
@@ -298,19 +305,27 @@ export function createAppStore() {
       showToast(`「${proj.title}」を読み込みました（${proj.blocks.length}ブロック）`);
       notify();
     },
-    async replaceActiveProjectSource({ title, rawText, rawBlocks, inputMode = 'alternating' }) {
+    async replaceActiveProjectSource({
+      title,
+      rawText,
+      rawBlocks,
+      inputMode = 'alternating',
+      splitInsideList = false,
+    }) {
       const current = getActiveProject();
       if (!current) return;
       const newBlocks = parseDocumentBlocks(rawText, {
         abbreviations: state.abbreviations,
         rawBlocks,
         inputMode,
+        splitInsideList,
       });
       const { blocks: reconciled, summary } = reconcileReloadedBlocks(current.blocks, newBlocks);
       const updated = {
         ...current,
         title: (title || '').trim() || current.title,
         rawSourceText: rawText,
+        splitInsideList: Boolean(splitInsideList),
         blocks: reconciled,
         lastFocusedGroupId: reconciled[0]?.groups[0]?.id || null,
       };
@@ -648,23 +663,43 @@ export function createAppStore() {
       mutateBlock(blockId, (blk) => moveSentenceToGroup(blk, lang, sentenceId, targetGroupId), true);
     },
     swapBlockLanguages(blockId) {
-      mutateBlock(blockId, (blk) => swapBlockSides(blk, state.abbreviations), true);
+      const projSplit = Boolean(getActiveProject()?.splitInsideList);
+      mutateBlock(
+        blockId,
+        (blk) => swapBlockSides(blk, state.abbreviations, { splitInsideList: blk.splitInsideList ?? projSplit }),
+        true,
+      );
       showToast('ブロックの英語・日本語を入れ替えました');
     },
     mergeBlockWithFollowing(blockIndex) {
       updateActiveProject((proj) => {
-        const blocks = mergeWithNextBlock(proj.blocks, blockIndex, state.abbreviations);
+        const blocks = mergeWithNextBlock(proj.blocks, blockIndex, state.abbreviations, {
+          splitInsideList: Boolean(proj.splitInsideList),
+        });
         return { ...proj, blocks };
       }, true);
       showToast('次のブロックと結合しました');
     },
-    realignBlock(blockId, useHintDp = true) {
+    realignBlock(blockId, useHintDp = true, splitInsideList = null) {
+      const projSplit = Boolean(getActiveProject()?.splitInsideList);
       mutateBlock(
         blockId,
-        (blk) => realignBlockWithHints(blk, state.abbreviations, useHintDp),
+        (blk) =>
+          realignBlockWithHints(blk, state.abbreviations, useHintDp, {
+            splitInsideList:
+              splitInsideList !== null ? Boolean(splitInsideList) : blk.splitInsideList ?? projSplit,
+          }),
         true,
       );
-      showToast(useHintDp ? 'ヒントを使って自動整列しました' : '先頭から1対1に再整列しました');
+      if (splitInsideList !== null) {
+        showToast(
+          splitInsideList
+            ? '番号・箇条書き行内も文末（。/.）で再分割しました'
+            : '番号・箇条書きを行単位の分割に戻しました',
+        );
+      } else {
+        showToast(useHintDp ? 'ヒントを使って自動整列しました' : '先頭から1対1に再整列しました');
+      }
     },
     toggleBlockJaEditor(blockId, forceOpen = null) {
       const next = new Set(state.editingJaBlockIds);
@@ -674,8 +709,17 @@ export function createAppStore() {
       state.editingJaBlockIds = next;
       notify();
     },
-    updateBlockJapanese(blockId, jaText) {
-      mutateBlock(blockId, (blk) => updateBlockJapaneseText(blk, jaText), true);
+    updateBlockJapanese(blockId, jaText, splitInsideList = null) {
+      const projSplit = Boolean(getActiveProject()?.splitInsideList);
+      mutateBlock(
+        blockId,
+        (blk) =>
+          updateBlockJapaneseText(blk, jaText, {
+            splitInsideList:
+              splitInsideList !== null ? Boolean(splitInsideList) : blk.splitInsideList ?? projSplit,
+          }),
+        true,
+      );
       const next = new Set(state.editingJaBlockIds);
       next.delete(blockId);
       state.editingJaBlockIds = next;
@@ -688,9 +732,13 @@ export function createAppStore() {
         showToast('テキストを入力またはペーストしてください', true);
         return;
       }
+      const projSplit = Boolean(getActiveProject()?.splitInsideList);
       mutateBlock(
         blockId,
-        (blk) => insertTextIntoGroup(blk, groupId, lang, clean, state.abbreviations),
+        (blk) =>
+          insertTextIntoGroup(blk, groupId, lang, clean, state.abbreviations, {
+            splitInsideList: blk.splitInsideList ?? projSplit,
+          }),
         true,
       );
       showToast(lang === 'ja' ? '日本語文を対訳枠へ反映しました' : '英文を対訳枠へ反映しました');
@@ -705,6 +753,7 @@ export function createAppStore() {
             buildAlignmentBlock(blk.enRaw, blk.jaRaw, idx, {
               id: blk.id,
               abbreviations: cleaned,
+              splitInsideList: blk.splitInsideList ?? Boolean(proj.splitInsideList),
               warnings: (blk.warnings || []).filter(
                 (w) => w !== 'UNMATCHED_COUNT' && w !== 'UNCONFIRMED_GROUP',
               ),

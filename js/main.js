@@ -31,7 +31,7 @@ let lastRenderedModalKey = null;
 store.subscribe((state) => {
   workspace.render(state);
   const modalKey = state.activeModal
-    ? `${state.activeModal}:${state.glossaryTab}:${state.tmModalTab}:${state.glossaryRevision}:${state.tmRevision}:${JSON.stringify(state.jaNormOptions)}:${Object.keys(store.getActiveProject()?.dismissedHints || {}).length}:${state.projects.map((p) => `${p.id}:${p.title}`).join('|')}`
+    ? `${state.activeModal}:${state.importModalMode}:${state.glossaryTab}:${state.tmModalTab}:${state.glossaryRevision}:${state.tmRevision}:${JSON.stringify(state.jaNormOptions)}:${Object.keys(store.getActiveProject()?.dismissedHints || {}).length}:${state.projects.map((p) => `${p.id}:${p.title}`).join('|')}`
     : null;
   if (modalKey !== lastRenderedModalKey) {
     lastRenderedModalKey = modalKey;

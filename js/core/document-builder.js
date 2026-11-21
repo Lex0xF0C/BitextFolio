@@ -3,7 +3,12 @@
  * Zero DOM dependencies.
  */
 
-import { buildEnglishOnlyPairs, pairClassifiedBlocks, splitIntoRawBlocks } from './block-parser.js';
+import {
+  buildEnglishOnlyPairs,
+  isListLine,
+  pairClassifiedBlocks,
+  splitIntoRawBlocks,
+} from './block-parser.js';
 import {
   createInitialGroups,
   makeSentenceItem,
@@ -42,8 +47,13 @@ help external reporters and vendors align on remediation milestones.
  */
 export function buildAlignmentBlock(enRaw, jaRaw, index, options = {}) {
   const abbreviations = options.abbreviations || DEFAULT_ABBREVIATIONS;
-  const enList = splitEnglishSentences(enRaw, { abbreviations }).map((s) => makeSentenceItem(s, 'en'));
-  const jaList = splitJapaneseSentences(jaRaw).map((s) => makeSentenceItem(s, 'ja'));
+  const splitInsideList = Boolean(options.splitInsideList);
+  const enList = splitEnglishSentences(enRaw, { abbreviations, splitInsideList }).map((s) =>
+    makeSentenceItem(s, 'en'),
+  );
+  const jaList = splitJapaneseSentences(jaRaw, { splitInsideList }).map((s) =>
+    makeSentenceItem(s, 'ja'),
+  );
   const blockId = options.id || nextLocalId('blk');
   const hashes = buildBlockHashes(enRaw, jaRaw);
   const groups = createInitialGroups(enList, jaList, blockId);
@@ -57,6 +67,7 @@ export function buildAlignmentBlock(enRaw, jaRaw, index, options = {}) {
     jaLang: options.jaLang || (jaRaw ? 'ja' : null),
     enConfidence: options.enConfidence ?? 1,
     jaConfidence: options.jaConfidence ?? 1,
+    splitInsideList,
     warnings: [...(options.warnings || [])],
     enSentences: enList,
     jaSentences: jaList,
@@ -77,6 +88,7 @@ export function parseDocumentBlocks(rawText, options = {}) {
   return pairs.map((pair, idx) =>
     buildAlignmentBlock(pair.enRaw, pair.jaRaw, idx, {
       abbreviations: options.abbreviations,
+      splitInsideList: Boolean(options.splitInsideList),
       enLang: pair.enLang,
       jaLang: pair.jaLang,
       enConfidence: pair.enConfidence,
@@ -90,9 +102,15 @@ export function parseDocumentBlocks(rawText, options = {}) {
  * Updates or fills in the Japanese paragraph text for an existing block,
  * preserving existing English sentence edits and recalculating hashes and groups.
  */
-export function updateBlockJapaneseText(block, newJaRaw) {
+export function updateBlockJapaneseText(block, newJaRaw, options = {}) {
   const cleanJa = String(newJaRaw || '').trim();
-  const jaList = splitJapaneseSentences(cleanJa).map((s) => makeSentenceItem(s, 'ja'));
+  const splitInsideList =
+    options.splitInsideList !== undefined
+      ? Boolean(options.splitInsideList)
+      : Boolean(block.splitInsideList);
+  const jaList = splitJapaneseSentences(cleanJa, { splitInsideList }).map((s) =>
+    makeSentenceItem(s, 'ja'),
+  );
   const hashes = buildBlockHashes(block.enRaw, cleanJa);
   const groups = createInitialGroups(block.enSentences, jaList, block.id);
   const cleanedWarnings = (block.warnings || []).filter(
@@ -108,6 +126,7 @@ export function updateBlockJapaneseText(block, newJaRaw) {
     jaRaw: cleanJa,
     jaLang: cleanJa ? 'ja' : null,
     jaConfidence: cleanJa ? 1 : 0,
+    splitInsideList,
     jaSentences: jaList,
     groups,
     warnings: cleanedWarnings,
@@ -119,18 +138,29 @@ export function updateBlockJapaneseText(block, newJaRaw) {
  * Inserts typed or pasted text directly into an empty side of an existing alignment group,
  * keeping sentence order consistent across surrounding groups and recalculating hashes/warnings.
  */
-export function insertTextIntoGroup(block, groupId, lang, rawInput, abbreviations = DEFAULT_ABBREVIATIONS) {
+export function insertTextIntoGroup(
+  block,
+  groupId,
+  lang,
+  rawInput,
+  abbreviations = DEFAULT_ABBREVIATIONS,
+  options = {},
+) {
   const clean = String(rawInput || '').trim();
   if (!clean || !block) return block;
 
   const listKey = lang === 'en' ? 'enSentences' : 'jaSentences';
   const idKey = lang === 'en' ? 'enIds' : 'jaIds';
   const rawKey = lang === 'en' ? 'enRaw' : 'jaRaw';
+  const splitInsideList =
+    options.splitInsideList !== undefined
+      ? Boolean(options.splitInsideList)
+      : Boolean(block.splitInsideList);
 
   const newItems = (
     lang === 'en'
-      ? splitEnglishSentences(clean, { abbreviations })
-      : splitJapaneseSentences(clean)
+      ? splitEnglishSentences(clean, { abbreviations, splitInsideList })
+      : splitJapaneseSentences(clean, { splitInsideList })
   ).map((s) => makeSentenceItem(s, lang));
 
   if (newItems.length === 0) return block;
@@ -168,7 +198,11 @@ export function insertTextIntoGroup(block, groupId, lang, rawInput, abbreviation
     };
   });
 
-  const rebuiltRaw = nextSentences.map((s) => s.rawText).join(lang === 'en' ? ' ' : '');
+  const isList =
+    nextSentences.length > 1 && nextSentences.every((s) => isListLine(s.rawText));
+  const rebuiltRaw = nextSentences
+    .map((s) => s.rawText)
+    .join(isList ? '\n' : lang === 'en' ? ' ' : '');
   const nextEnRaw = lang === 'en' ? rebuiltRaw : block.enRaw;
   const nextJaRaw = lang === 'ja' ? rebuiltRaw : block.jaRaw;
   const hashes = buildBlockHashes(nextEnRaw, nextJaRaw);
@@ -224,7 +258,11 @@ export function updateSentenceTextInBlock(block, lang, sentenceId, newRawText) {
   });
   if (!changed) return block;
 
-  const rebuiltRaw = nextSentences.map((s) => s.rawText).join(lang === 'en' ? ' ' : '');
+  const isList =
+    nextSentences.length > 1 && nextSentences.every((s) => isListLine(s.rawText));
+  const rebuiltRaw = nextSentences
+    .map((s) => s.rawText)
+    .join(isList ? '\n' : lang === 'en' ? ' ' : '');
   const nextEnRaw = lang === 'en' ? rebuiltRaw : block.enRaw;
   const nextJaRaw = lang === 'ja' ? rebuiltRaw : block.jaRaw;
   const hashes = buildBlockHashes(nextEnRaw, nextJaRaw);
@@ -266,9 +304,21 @@ export function updateSentenceTextInBlock(block, lang, sentenceId, newRawText) {
 /**
  * Creates a full DocumentProject record.
  */
-export function createDocumentProject({ title, rawText, abbreviations, rawBlocks, inputMode }) {
+export function createDocumentProject({
+  title,
+  rawText,
+  abbreviations,
+  rawBlocks,
+  inputMode,
+  splitInsideList = false,
+}) {
   const now = new Date().toISOString();
-  const blocks = parseDocumentBlocks(rawText, { abbreviations, rawBlocks, inputMode });
+  const blocks = parseDocumentBlocks(rawText, {
+    abbreviations,
+    rawBlocks,
+    inputMode,
+    splitInsideList: Boolean(splitInsideList),
+  });
   const firstGroupId = blocks[0]?.groups[0]?.id || null;
   return {
     id: nextLocalId('doc'),
@@ -277,6 +327,7 @@ export function createDocumentProject({ title, rawText, abbreviations, rawBlocks
     updatedAt: now,
     rawSourceText: rawText || '',
     abbreviations: [...(abbreviations || DEFAULT_ABBREVIATIONS)],
+    splitInsideList: Boolean(splitInsideList),
     lastFocusedGroupId: firstGroupId,
     dismissedHints: {},
     blocks,
@@ -286,7 +337,7 @@ export function createDocumentProject({ title, rawText, abbreviations, rawBlocks
 /**
  * Swaps EN and JA sides within a single block (for structural correction).
  */
-export function swapBlockSides(block, abbreviations) {
+export function swapBlockSides(block, abbreviations, options = {}) {
   const structural = (block.warnings || []).filter(
     (w) =>
       w !== 'CONSECUTIVE_EN' &&
@@ -295,9 +346,14 @@ export function swapBlockSides(block, abbreviations) {
       w !== 'LEADING_JA' &&
       w !== 'AMBIGUOUS_LANG',
   );
+  const splitInsideList =
+    options.splitInsideList !== undefined
+      ? Boolean(options.splitInsideList)
+      : Boolean(block.splitInsideList);
   return buildAlignmentBlock(block.jaRaw, block.enRaw, block.index, {
     id: block.id,
     abbreviations,
+    splitInsideList,
     warnings: structural,
   });
 }
@@ -306,7 +362,7 @@ export function swapBlockSides(block, abbreviations) {
  * Merges a block with the next block (useful when two consecutive EN or JA blocks should be joined,
  * or an orphan EN block should pair with the following orphan JA block).
  */
-export function mergeWithNextBlock(blocks, blockIndex, abbreviations) {
+export function mergeWithNextBlock(blocks, blockIndex, abbreviations, options = {}) {
   if (blockIndex < 0 || blockIndex + 1 >= blocks.length) return blocks;
   const curr = blocks[blockIndex];
   const next = blocks[blockIndex + 1];
@@ -318,8 +374,13 @@ export function mergeWithNextBlock(blocks, blockIndex, abbreviations) {
 
   const mergedEn = joinParts(curr.enRaw, next.enRaw);
   const mergedJa = joinParts(curr.jaRaw, next.jaRaw);
+  const splitInsideList =
+    options.splitInsideList !== undefined
+      ? Boolean(options.splitInsideList)
+      : Boolean(curr.splitInsideList || next.splitInsideList);
   const mergedBlock = buildAlignmentBlock(mergedEn, mergedJa, blockIndex, {
     abbreviations,
+    splitInsideList,
     warnings: [],
   });
 
@@ -334,17 +395,24 @@ export function mergeWithNextBlock(blocks, blockIndex, abbreviations) {
 /**
  * Re-splits all sentences in a block using current abbreviation list or DP hint alignment.
  */
-export function realignBlockWithHints(block, abbreviations, useHintDp = true) {
-  const enList = splitEnglishSentences(block.enRaw, { abbreviations }).map((s) =>
+export function realignBlockWithHints(block, abbreviations, useHintDp = true, options = {}) {
+  const splitInsideList =
+    options.splitInsideList !== undefined
+      ? Boolean(options.splitInsideList)
+      : Boolean(block.splitInsideList);
+  const enList = splitEnglishSentences(block.enRaw, { abbreviations, splitInsideList }).map((s) =>
     makeSentenceItem(s, 'en'),
   );
-  const jaList = splitJapaneseSentences(block.jaRaw).map((s) => makeSentenceItem(s, 'ja'));
+  const jaList = splitJapaneseSentences(block.jaRaw, { splitInsideList }).map((s) =>
+    makeSentenceItem(s, 'ja'),
+  );
   const groups = useHintDp
     ? suggestHintedGroups(enList, jaList, block.id)
     : createInitialGroups(enList, jaList, block.id);
 
   return syncBlockMeta({
     ...block,
+    splitInsideList,
     enSentences: enList,
     jaSentences: jaList,
     groups,

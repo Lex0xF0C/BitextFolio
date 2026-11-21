@@ -5,7 +5,8 @@
 
 import { classifyLanguage } from './lang-classifier.js';
 
-const LIST_LINE_RE = /^\s*(?:[-*+・•]|(?:\d{1,3}|[A-Za-z])[.)]|[（(]\d{1,3}[）)])\s+/;
+const LIST_LINE_RE =
+  /^\s*(?:[-*+]\s+|[・•●■▪▫◆◇▶▷※\u2460-\u2473]\s*|(?:(?:\d{1,3}|[A-Za-z])[.)])\s+|(?:[（(]\d{1,3}[）)]|\d{1,3}）)\s*|\d{1,3}．(?![\d０-９]+(?:\s|$|[%％.,．]))\s*)/;
 
 /**
  * Checks whether a single line starts with a bullet or numbered list marker.
@@ -24,6 +25,7 @@ export function isListLine(line) {
  */
 export function isListBlock(rawText) {
   const lines = String(rawText || '')
+    .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map((l) => l.trimEnd())
@@ -49,7 +51,10 @@ export function isListBlock(rawText) {
  * }>}
  */
 export function splitIntoRawBlocks(inputText) {
-  const normalized = String(inputText || '').replace(/\r\n?/g, '\n').trim();
+  const normalized = String(inputText || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
   if (!normalized) return [];
 
   const chunks = normalized.split(/\n(?:[ \t]*\n)+/);

@@ -164,17 +164,36 @@ function isDecimalOrVersionDot(text, dotIndex) {
 /**
  * Splits English prose or list block into sentences.
  * @param {string} rawText
- * @param {{ abbreviations?: string[] }} [options]
+ * @param {{ abbreviations?: string[], splitInsideList?: boolean }} [options]
  * @returns {string[]}
  */
 export function splitEnglishSentences(rawText, options = {}) {
-  const input = String(rawText || '').trim();
+  const input = String(rawText || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
   if (!input) return [];
 
-  if (isListBlock(input)) {
-    return splitListBlockLines(input);
+  const paragraphs = input
+    .split(/\n(?:[ \t]*\n)+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (paragraphs.length > 1) {
+    return paragraphs.flatMap((p) => splitEnglishSentences(p, options));
   }
 
+  if (isListBlock(input)) {
+    const items = splitListBlockLines(input);
+    if (options.splitInsideList || items.length <= 1) {
+      return items.flatMap((item) => splitEnglishProse(item, options));
+    }
+    return items;
+  }
+
+  return splitEnglishProse(input, options);
+}
+
+function splitEnglishProse(input, options = {}) {
   const text = unwrapProseLines(input, 'en');
   if (!text) return [];
 
@@ -231,6 +250,9 @@ export function splitEnglishSentences(rawText, options = {}) {
     }
 
     if (ch === '.') {
+      if (start === 0 && /^(?:\d{1,3}|[A-Za-z])\.$/.test(text.slice(start, i + 1))) {
+        continue;
+      }
       if (isDecimalOrVersionDot(text, i)) {
         continue;
       }
@@ -318,21 +340,43 @@ export function splitEnglishSentences(rawText, options = {}) {
 }
 
 const JA_CLOSING_BRACKETS_RE = /^[」』）)】〕〉》”’"')\]*]+/;
+const JA_CHAR_BEFORE_HALF_PUNCT_RE =
+  /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF。、．，」』）)】〕〉》]/;
 
 /**
  * Splits Japanese prose or list block into sentences.
  * Keeps immediately trailing closing brackets/quotes attached to the preceding sentence.
  * @param {string} rawText
+ * @param {{ splitInsideList?: boolean }} [options]
  * @returns {string[]}
  */
-export function splitJapaneseSentences(rawText) {
-  const input = String(rawText || '').trim();
+export function splitJapaneseSentences(rawText, options = {}) {
+  const input = String(rawText || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
   if (!input) return [];
 
-  if (isListBlock(input)) {
-    return splitListBlockLines(input);
+  const paragraphs = input
+    .split(/\n(?:[ \t]*\n)+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (paragraphs.length > 1) {
+    return paragraphs.flatMap((p) => splitJapaneseSentences(p, options));
   }
 
+  if (isListBlock(input)) {
+    const items = splitListBlockLines(input);
+    if (options.splitInsideList || items.length <= 1) {
+      return items.flatMap((item) => splitJapaneseProse(item));
+    }
+    return items;
+  }
+
+  return splitJapaneseProse(input);
+}
+
+function splitJapaneseProse(input) {
   const text = unwrapProseLines(input, 'ja');
   if (!text) return [];
 
@@ -341,13 +385,32 @@ export function splitJapaneseSentences(rawText) {
 
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
-    if (ch !== '。' && ch !== '！' && ch !== '？') {
+    if (ch === '．') {
+      if (start === 0 && /^[\d０-９]{1,3}．$/.test(text.slice(start, i + 1))) {
+        continue;
+      }
+      const prev = i > 0 ? text[i - 1] : '';
+      const next = i + 1 < text.length ? text[i + 1] : '';
+      if (
+        prev === '．' ||
+        next === '．' ||
+        (/[\d０-９A-Za-zＡ-Ｚａ-ｚ]/.test(prev) && /[\d０-９A-Za-zＡ-Ｚａ-ｚ]/.test(next))
+      ) {
+        continue;
+      }
+    } else if (ch === '!' || ch === '?') {
+      const prev = i > 0 ? text[i - 1] : '';
+      const next = i + 1 < text.length ? text[i + 1] : '';
+      if (!JA_CHAR_BEFORE_HALF_PUNCT_RE.test(prev) || /[A-Za-z0-9_=&/%#+-]/.test(next)) {
+        continue;
+      }
+    } else if (ch !== '。' && ch !== '！' && ch !== '？') {
       continue;
     }
 
     // Consume consecutive sentence-end punctuation
     let cutIdx = i + 1;
-    while (cutIdx < text.length && /[。！？!?]/.test(text[cutIdx])) {
+    while (cutIdx < text.length && /[。．！？!?]/.test(text[cutIdx])) {
       cutIdx += 1;
     }
 

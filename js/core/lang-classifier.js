@@ -5,8 +5,10 @@
 
 import { stripInlineMarkup } from './markup.js';
 
-const JA_CHAR_RE = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF\u3001\u3002\u300C\u300D\u300E\u300F\uFF01\uFF1F]/g;
+const JA_CHAR_RE =
+  /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF\u3001\u3002\u300A\u300B\u300C\u300D\u300E\u300F\u3010\u3011\u30FB\uFF01\uFF08\uFF09\uFF0C\uFF0E\uFF1A\uFF1B\uFF1F\uFF5E]/g;
 const LATIN_CHAR_RE = /[A-Za-z]/g;
+const URL_RE = /https?:\/\/\S+/gi;
 
 /**
  * Classifies a text block as 'en', 'ja', or 'ambiguous'.
@@ -35,8 +37,10 @@ export function classifyLanguage(rawText) {
     };
   }
 
-  const jaMatches = plain.match(JA_CHAR_RE);
-  const enMatches = plain.match(LATIN_CHAR_RE);
+  const withoutUrls = plain.replace(URL_RE, ' ').trim();
+  const sample = withoutUrls || plain;
+  const jaMatches = sample.match(JA_CHAR_RE);
+  const enMatches = sample.match(LATIN_CHAR_RE);
   const jaCount = jaMatches ? jaMatches.length : 0;
   const enCount = enMatches ? enMatches.length : 0;
   const total = jaCount + enCount;
@@ -60,7 +64,7 @@ export function classifyLanguage(rawText) {
   // contain at most occasional glosses. Note: 1 Japanese char carries more information
   // than 1 Latin letter, so >= 28% Japanese chars with >= 3 chars strongly indicates JA
   // unless EN dominates overwhelmingly.
-  if (jaRatio >= 0.45 || (jaCount >= 4 && jaRatio >= 0.28 && enCount < jaCount * 2.5)) {
+  if (jaRatio >= 0.45 || (jaCount >= 3 && jaRatio >= 0.28 && enCount < jaCount * 2.5)) {
     const confidence = Math.min(1, 0.5 + jaRatio * 0.5);
     return {
       lang: 'ja',

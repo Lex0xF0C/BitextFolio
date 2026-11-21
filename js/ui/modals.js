@@ -30,6 +30,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
     let draftText = '';
     let draftRawBlocks = [];
     let draftInputMode = 'alternating'; // 'alternating' | 'english_only'
+    let draftSplitInsideList = isReplace && activeProj ? Boolean(activeProj.splitInsideList) : false;
 
     const titleInput = el('input', {
       type: 'text',
@@ -42,6 +43,11 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
     });
 
     const modeControl = el('div', { className: 'segmented-control', role: 'group', 'aria-label': '取り込み形式' });
+    const listSplitControl = el('div', {
+      className: 'segmented-control',
+      role: 'group',
+      'aria-label': '番号・箇条書き行の文分割設定',
+    });
 
     function renderModeControl() {
       modeControl.textContent = '';
@@ -70,7 +76,38 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         }),
       );
     }
+
+    function renderListSplitControl() {
+      listSplitControl.textContent = '';
+      listSplitControl.appendChild(
+        el('button', {
+          type: 'button',
+          className: `segmented-btn${!draftSplitInsideList ? ' is-active' : ''}`,
+          textContent: '箇条書きとして行単位で分割（標準）',
+          title: '複数の (1) や ・ があるブロックを1行1項目として扱います（単一の (1) 段落は常に文末で分割します）',
+          onClick: () => {
+            draftSplitInsideList = false;
+            renderListSplitControl();
+            updatePreview();
+          },
+        }),
+      );
+      listSplitControl.appendChild(
+        el('button', {
+          type: 'button',
+          className: `segmented-btn${draftSplitInsideList ? ' is-active' : ''}`,
+          textContent: '条文の項など行内も文末（。/.）で分割',
+          title: '法律の条文の (1)(2) 項のように複数文を含む場合、各項目の中もピリオドや句点で文分割します',
+          onClick: () => {
+            draftSplitInsideList = true;
+            renderListSplitControl();
+            updatePreview();
+          },
+        }),
+      );
+    }
     renderModeControl();
+    renderListSplitControl();
 
     const textArea = el('textarea', {
       className: 'source-textarea',
@@ -98,6 +135,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
             rawText: draftText,
             rawBlocks: draftRawBlocks,
             inputMode: draftInputMode,
+            splitInsideList: draftSplitInsideList,
           });
         } else {
           await store.createNewProject({
@@ -105,6 +143,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
             rawText: draftText,
             rawBlocks: draftRawBlocks,
             inputMode: draftInputMode,
+            splitInsideList: draftSplitInsideList,
           });
         }
       },
@@ -288,6 +327,10 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         el('div', { className: 'form-field' }, [
           el('span', { className: 'form-label', textContent: '取り込み形式' }),
           modeControl,
+        ]),
+        el('div', { className: 'form-field' }, [
+          el('span', { className: 'form-label', textContent: '番号・箇条書き行（(1) / 1. / ・ 等）の扱い' }),
+          listSplitControl,
         ]),
         dropzone,
         el('div', { className: 'form-field' }, [

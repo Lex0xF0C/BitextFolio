@@ -50,7 +50,8 @@ export function triggerJsonDownload(filename, dataObject) {
 export function parseImportedJson(jsonText) {
   let parsed;
   try {
-    parsed = JSON.parse(jsonText);
+    const cleanJson = String(jsonText || '').replace(/^\uFEFF/, '');
+    parsed = JSON.parse(cleanJson);
   } catch {
     throw new Error('JSONの構文が正しくありません。UTF-8のJSONファイルを選択してください。');
   }
@@ -90,7 +91,7 @@ export function parseImportedJson(jsonText) {
 export function readFileAsUtf8(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onload = () => resolve(String(reader.result || '').replace(/^\uFEFF/, ''));
     reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました。'));
     reader.readAsText(file, 'UTF-8');
   });
