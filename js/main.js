@@ -87,13 +87,25 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  if (e.key === 'j' || e.key === 'ArrowDown') {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    workspace.scrollViewportBy(96);
+    return;
+  }
+
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    workspace.scrollViewportBy(-96);
+    return;
+  }
+
+  if (e.key === 'j') {
     e.preventDefault();
     workspace.stepSelectedGroup(1);
     return;
   }
 
-  if (e.key === 'k' || e.key === 'ArrowUp') {
+  if (e.key === 'k') {
     e.preventDefault();
     workspace.stepSelectedGroup(-1);
     return;

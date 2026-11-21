@@ -38,6 +38,9 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
   let currentDupJaIndex = null;
   let virtualRaf = null;
   let lastRenderRange = { start: -1, end: -1 };
+  let lastWorkspaceSig = null;
+  let lastToolbarSig = null;
+  let lastRenderedProjectId = null;
   let rememberedJaSelection = null; // { groupId, text }
   let quickRegisterState = null; // { mode: 'tm' | 'glossary', blockId, groupId, enText, jaText, jaSuggestions }
   const unmatchedDrafts = new Map(); // `${groupId}:${lang}` -> string
@@ -668,9 +671,28 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     return out;
   }
 
-  function scrollToBlockOrGroup(blockId, groupId = null) {
+  function scrollViewportBy(deltaY) {
+    blocksViewport.scrollBy({ top: deltaY, behavior: 'auto' });
+  }
+
+  function scrollToBlockOrGroup(blockId, groupId = null, { onlyIfOutside = false, smooth = true } = {}) {
     const idx = lastFilteredBlocks.findIndex((b) => b.id === blockId);
     if (idx === -1) return;
+
+    const selector = groupId
+      ? `[data-group-id="${CSS.escape(groupId)}"]`
+      : `[data-block-id="${CSS.escape(blockId)}"]`;
+
+    if (onlyIfOutside) {
+      const existing = blocksList.querySelector(selector);
+      if (existing) {
+        const vpRect = blocksViewport.getBoundingClientRect();
+        const tRect = existing.getBoundingClientRect();
+        if (tRect.top >= vpRect.top + 16 && tRect.bottom <= vpRect.bottom - 16) {
+          return;
+        }
+      }
+    }
 
     if (lastFilteredBlocks.length > VIRTUAL_THRESHOLD) {
       let y = 0;
@@ -679,15 +701,34 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       }
       blocksViewport.scrollTop = Math.max(0, y - 24);
       renderVisibleWindow(true);
+      const target = blocksList.querySelector(selector);
+      if (target) {
+        const vpRect = blocksViewport.getBoundingClientRect();
+        const tRect = target.getBoundingClientRect();
+        const desiredOffset = Math.max(24, (vpRect.height - tRect.height) / 3);
+        blocksViewport.scrollTop = Math.max(
+          0,
+          blocksViewport.scrollTop + (tRect.top - vpRect.top) - desiredOffset,
+        );
+        renderVisibleWindow(false);
+      }
+      return;
     }
 
     requestAnimationFrame(() => {
-      const selector = groupId
-        ? `[data-group-id="${CSS.escape(groupId)}"]`
-        : `[data-block-id="${CSS.escape(blockId)}"]`;
       const target = blocksList.querySelector(selector);
       if (target) {
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        const vpRect = blocksViewport.getBoundingClientRect();
+        const tRect = target.getBoundingClientRect();
+        const desiredOffset = Math.max(24, (vpRect.height - tRect.height) / 3);
+        const nextTop = Math.max(
+          0,
+          blocksViewport.scrollTop + (tRect.top - vpRect.top) - desiredOffset,
+        );
+        blocksViewport.scrollTo({
+          top: nextTop,
+          behavior: smooth ? 'smooth' : 'auto',
+        });
       }
     });
   }
@@ -759,14 +800,46 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
   function stepSelectedGroup(delta) {
     const flat = getFlatFilteredGroups();
     if (flat.length === 0) return;
-    const currIdx = flat.findIndex((item) => item.groupId === store.state.selectedGroupId);
+
+    const vpRect = blocksViewport.getBoundingClientRect();
+    const findFirstVisibleGroupIdx = () => {
+      for (const grpEl of blocksList.querySelectorAll('.alignment-group')) {
+        const r = grpEl.getBoundingClientRect();
+        if (r.bottom > vpRect.top + 20 && r.top < vpRect.bottom - 20) {
+          const gid = grpEl.dataset.groupId;
+          const idx = flat.findIndex((item) => item.groupId === gid);
+          if (idx !== -1) return idx;
+        }
+      }
+      return -1;
+    };
+
+    let currIdx = flat.findIndex((item) => item.groupId === store.state.selectedGroupId);
+    if (currIdx !== -1) {
+      const currEl = blocksList.querySelector(
+        `[data-group-id="${CSS.escape(flat[currIdx].groupId)}"]`,
+      );
+      const isCurrVisible = currEl
+        ? (() => {
+            const r = currEl.getBoundingClientRect();
+            return r.bottom > vpRect.top + 8 && r.top < vpRect.bottom - 8;
+          })()
+        : false;
+      if (!isCurrVisible) {
+        const visIdx = findFirstVisibleGroupIdx();
+        if (visIdx !== -1) {
+          currIdx = visIdx - delta;
+        }
+      }
+    }
+
     const nextIdx =
       currIdx === -1
-        ? 0
+        ? Math.max(0, findFirstVisibleGroupIdx())
         : Math.max(0, Math.min(flat.length - 1, currIdx + delta));
     const target = flat[nextIdx];
     store.selectGroup(target.groupId);
-    scrollToBlockOrGroup(target.blockId, target.groupId);
+    scrollToBlockOrGroup(target.blockId, target.groupId, { onlyIfOutside: true });
   }
 
   function renderSentenceNode(block, group, groupIdx, lang, sentence, listIdx, totalInLang) {
@@ -1995,6 +2068,22 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     }
 
     // Virtual windowing for large documents
+    const vpRect = blocksViewport.getBoundingClientRect();
+    let anchorBlockId = null;
+    let anchorOldTop = 0;
+    if (!forceRedraw && blocksViewport.scrollTop > 0) {
+      for (const child of blocksList.children) {
+        const bid = child.dataset?.blockId;
+        if (!bid) continue;
+        const r = child.getBoundingClientRect();
+        if (r.bottom > vpRect.top) {
+          anchorBlockId = bid;
+          anchorOldTop = r.top - vpRect.top;
+          break;
+        }
+      }
+    }
+
     const viewTop = blocksViewport.scrollTop;
     const viewBottom = viewTop + blocksViewport.clientHeight;
     let accY = 0;
@@ -2026,21 +2115,57 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     lastRenderRange = { start: startIdx, end: endIdx };
     topSpacer.style.height = `${topH}px`;
     bottomSpacer.style.height = `${bottomH}px`;
-    blocksList.textContent = '';
 
-    for (let i = startIdx; i < endIdx; i += 1) {
-      const node = renderBlockSection(blocks[i], allBlocksCount);
-      blocksList.appendChild(node);
-    }
-
-    requestAnimationFrame(() => {
-      for (const child of blocksList.children) {
+    if (forceRedraw || (blocksList.firstElementChild && !blocksList.firstElementChild.dataset?.blockId)) {
+      blocksList.textContent = '';
+      for (let i = startIdx; i < endIdx; i += 1) {
+        blocksList.appendChild(renderBlockSection(blocks[i], allBlocksCount));
+      }
+    } else {
+      const existingById = new Map();
+      for (const child of Array.from(blocksList.children)) {
         const bid = child.dataset?.blockId;
-        if (bid) {
-          blockHeights.set(bid, child.getBoundingClientRect().height + 24);
+        if (bid) existingById.set(bid, child);
+        else child.remove();
+      }
+      const keepIds = new Set();
+      const desiredNodes = [];
+      for (let i = startIdx; i < endIdx; i += 1) {
+        const blk = blocks[i];
+        keepIds.add(blk.id);
+        desiredNodes.push(existingById.get(blk.id) || renderBlockSection(blk, allBlocksCount));
+      }
+      for (const [bid, node] of existingById.entries()) {
+        if (!keepIds.has(bid)) node.remove();
+      }
+      for (let i = 0; i < desiredNodes.length; i += 1) {
+        const desired = desiredNodes[i];
+        const current = blocksList.children[i];
+        if (current !== desired) {
+          blocksList.insertBefore(desired, current || null);
         }
       }
-    });
+    }
+
+    for (const child of blocksList.children) {
+      const bid = child.dataset?.blockId;
+      if (bid) {
+        blockHeights.set(bid, child.getBoundingClientRect().height + 24);
+      }
+    }
+
+    if (anchorBlockId && blocksViewport.scrollTop > 0) {
+      const anchorEl = blocksList.querySelector(
+        `[data-block-id="${CSS.escape(anchorBlockId)}"]`,
+      );
+      if (anchorEl) {
+        const anchorNewTop = anchorEl.getBoundingClientRect().top - vpRect.top;
+        const delta = anchorNewTop - anchorOldTop;
+        if (Math.abs(delta) >= 2) {
+          blocksViewport.scrollTop = Math.max(0, blocksViewport.scrollTop + delta);
+        }
+      }
+    }
   }
 
   function render(state) {
@@ -2143,142 +2268,190 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       warningBar.classList.add('is-hidden');
     }
 
-    // Filter controls
-    const filterDefs = [
-      ['all', 'すべて'],
-      ['unread', '未読'],
-      ['read', '読了'],
-      ['verified', '確認済'],
-      ['needs_review', '要確認'],
-      ['source_changed', '変更あり'],
-      ['marked_or_temp', 'マーカ・仮記録'],
-      ['glossary_issues', '用語警告'],
-      ['hint_issues', '漏れ・混入'],
-      ['warnings', '警告・不一致'],
-    ];
-    filterControl.textContent = '';
-    for (const [val, label] of filterDefs) {
-      filterControl.appendChild(
+    // Filter & Layout controls (update only when changed)
+    const nextToolbarSig = `${state.filterStatus}:${state.layoutMode}`;
+    if (nextToolbarSig !== lastToolbarSig) {
+      lastToolbarSig = nextToolbarSig;
+      const filterDefs = [
+        ['all', 'すべて'],
+        ['unread', '未読'],
+        ['read', '読了'],
+        ['verified', '確認済'],
+        ['needs_review', '要確認'],
+        ['source_changed', '変更あり'],
+        ['marked_or_temp', 'マーカ・仮記録'],
+        ['glossary_issues', '用語警告'],
+        ['hint_issues', '漏れ・混入'],
+        ['warnings', '警告・不一致'],
+      ];
+      filterControl.textContent = '';
+      for (const [val, label] of filterDefs) {
+        filterControl.appendChild(
+          el('button', {
+            type: 'button',
+            className: `segmented-btn${state.filterStatus === val ? ' is-active' : ''}`,
+            textContent: label,
+            onClick: () => store.setFilterStatus(val),
+          }),
+        );
+      }
+
+      layoutControl.textContent = '';
+      layoutControl.appendChild(
         el('button', {
           type: 'button',
-          className: `segmented-btn${state.filterStatus === val ? ' is-active' : ''}`,
-          textContent: label,
-          onClick: () => store.setFilterStatus(val),
+          className: `segmented-btn${state.layoutMode === 'columns' ? ' is-active' : ''}`,
+          textContent: '左右2列',
+          onClick: () => store.setLayoutMode('columns'),
+        }),
+      );
+      layoutControl.appendChild(
+        el('button', {
+          type: 'button',
+          className: `segmented-btn${state.layoutMode === 'stacked' ? ' is-active' : ''}`,
+          textContent: '上下2段',
+          onClick: () => store.setLayoutMode('stacked'),
         }),
       );
     }
 
-    // Layout mode controls
-    layoutControl.textContent = '';
-    layoutControl.appendChild(
-      el('button', {
-        type: 'button',
-        className: `segmented-btn${state.layoutMode === 'columns' ? ' is-active' : ''}`,
-        textContent: '左右2列',
-        onClick: () => store.setLayoutMode('columns'),
-      }),
-    );
-    layoutControl.appendChild(
-      el('button', {
-        type: 'button',
-        className: `segmented-btn${state.layoutMode === 'stacked' ? ' is-active' : ''}`,
-        textContent: '上下2段',
-        onClick: () => store.setLayoutMode('stacked'),
-      }),
-    );
-
-    // Filtered blocks
     if (searchInput.value !== state.searchQuery) {
       searchInput.value = state.searchQuery;
     }
-    currentDupJaIndex = activeProject ? buildDuplicateJaIndex(activeProject.blocks) : null;
-    const activeDismissedHints = activeProject?.dismissedHints || {};
-    lastFilteredBlocks = activeProject
-      ? activeProject.blocks.filter((b) =>
-          blockMatchesFilter(
-            b,
-            state.filterStatus,
-            state.searchQuery,
-            state.glossary,
-            state.jaNormOptions,
-            currentDupJaIndex,
-            activeDismissedHints,
-          ),
-        )
-      : [];
 
-    // Sidebar list
-    sidebarList.textContent = '';
-    for (const blk of lastFilteredBlocks) {
-      const done = blk.groups.filter((g) => g.status === 'verified').length;
-      const hasFlag =
-        (blk.warnings || []).length > 0 ||
-        blk.groups.some((g) => g.status === 'needs_review' || g.status === 'source_changed') ||
-        blockHasGlossaryIssues(blk, state.glossary, state.jaNormOptions) ||
-        blockHasActiveHints(blk, currentDupJaIndex, activeDismissedHints);
-      const isActive = blk.groups.some((g) => g.id === state.selectedGroupId);
-      const previewText =
-        blk.jaSentences[0]?.plainText || blk.enSentences[0]?.plainText || '(空ブロック)';
-
-      sidebarList.appendChild(
-        el(
-          'button',
-          {
-            type: 'button',
-            className: `sidebar-block-item${isActive ? ' is-active' : ''}`,
-            onClick: () => {
-              if (blk.groups[0]) store.selectGroup(blk.groups[0].id);
-              scrollToBlockOrGroup(blk.id, blk.groups[0]?.id);
-            },
-          },
-          [
-            el('div', { className: 'sidebar-block-top' }, [
-              el('span', {
-                className: 'tabular-nums',
-                textContent: `#${String(blk.index + 1).padStart(2, '0')}`,
-              }),
-              el('span', {
-                className: `tabular-nums${hasFlag ? ' status-needs_review' : ''}`,
-                textContent: `${done}/${blk.groups.length}${hasFlag ? ' ⚠' : ''}`,
-              }),
-            ]),
-            el('div', { className: 'sidebar-block-preview', textContent: previewText }),
-          ],
-        ),
-      );
-    }
-
-    // Preserve active memo, unmatched-input, sentence-edit, or clause-note focus across re-renders
-    const activeEl = document.activeElement;
-    const activeMemoGroupId = activeEl?.dataset?.memoGroupId || null;
-    const activeUnmatchedKey = activeEl?.dataset?.unmatchedInputKey || null;
-    const activeEditSentenceId = activeEl?.dataset?.editSentenceId || null;
-    const activeClauseNoteId = activeEl?.dataset?.clauseNoteId || null;
-    const hasTrackedInput =
-      activeMemoGroupId || activeUnmatchedKey || activeEditSentenceId || activeClauseNoteId;
-    const selectionStart = hasTrackedInput ? activeEl.selectionStart : null;
-    const selectionEnd = hasTrackedInput ? activeEl.selectionEnd : null;
-
-    renderVisibleWindow(true);
-
-    const restoreFocus = (selector) => {
-      const restored = blocksList.querySelector(selector);
-      if (restored) {
-        restored.focus();
-        if (selectionStart !== null && selectionEnd !== null) {
-          restored.setSelectionRange(selectionStart, selectionEnd);
-        }
-      }
+    // Check whether blocks/sidebar actually need DOM reconstruction
+    const workspaceSig = {
+      projectId: activeProject?.id || null,
+      blocks: activeProject?.blocks || null,
+      dismissedHints: activeProject?.dismissedHints || null,
+      filterStatus: state.filterStatus,
+      searchQuery: state.searchQuery,
+      layoutMode: state.layoutMode,
+      glossaryRevision: state.glossaryRevision,
+      jaNormOptions: state.jaNormOptions,
+      tmRevision: state.tmRevision,
+      openMemoGroupIds: state.openMemoGroupIds,
+      openClauseGroupIds: state.openClauseGroupIds,
+      editingJaBlockIds: state.editingJaBlockIds,
+      editingSentenceTarget: state.editingSentenceTarget,
+      activeSplitTarget: state.activeSplitTarget,
     };
 
-    if (activeMemoGroupId) {
-      restoreFocus(`textarea[data-memo-group-id="${CSS.escape(activeMemoGroupId)}"]`);
-    } else if (activeUnmatchedKey) {
-      restoreFocus(`textarea[data-unmatched-input-key="${CSS.escape(activeUnmatchedKey)}"]`);
-    } else if (activeEditSentenceId) {
-      restoreFocus(`textarea[data-edit-sentence-id="${CSS.escape(activeEditSentenceId)}"]`);
-    } else if (activeClauseNoteId) {
-      restoreFocus(`input[data-clause-note-id="${CSS.escape(activeClauseNoteId)}"]`);
+    const workspaceChanged =
+      !lastWorkspaceSig ||
+      Object.keys(workspaceSig).some((k) => workspaceSig[k] !== lastWorkspaceSig[k]);
+
+    if (workspaceChanged) {
+      lastWorkspaceSig = workspaceSig;
+      if (workspaceSig.projectId !== lastRenderedProjectId) {
+        lastRenderedProjectId = workspaceSig.projectId;
+        blockHeights.clear();
+        blocksViewport.scrollTop = 0;
+      }
+
+      currentDupJaIndex = activeProject ? buildDuplicateJaIndex(activeProject.blocks) : null;
+      const activeDismissedHints = activeProject?.dismissedHints || {};
+      lastFilteredBlocks = activeProject
+        ? activeProject.blocks.filter((b) =>
+            blockMatchesFilter(
+              b,
+              state.filterStatus,
+              state.searchQuery,
+              state.glossary,
+              state.jaNormOptions,
+              currentDupJaIndex,
+              activeDismissedHints,
+            ),
+          )
+        : [];
+
+      // Sidebar list
+      sidebarList.textContent = '';
+      for (const blk of lastFilteredBlocks) {
+        const done = blk.groups.filter((g) => g.status === 'verified').length;
+        const hasFlag =
+          (blk.warnings || []).length > 0 ||
+          blk.groups.some((g) => g.status === 'needs_review' || g.status === 'source_changed') ||
+          blockHasGlossaryIssues(blk, state.glossary, state.jaNormOptions) ||
+          blockHasActiveHints(blk, currentDupJaIndex, activeDismissedHints);
+        const isActive = blk.groups.some((g) => g.id === state.selectedGroupId);
+        const previewText =
+          blk.jaSentences[0]?.plainText || blk.enSentences[0]?.plainText || '(空ブロック)';
+
+        sidebarList.appendChild(
+          el(
+            'button',
+            {
+              type: 'button',
+              className: `sidebar-block-item${isActive ? ' is-active' : ''}`,
+              dataset: { blockId: blk.id },
+              onClick: () => {
+                if (blk.groups[0]) store.selectGroup(blk.groups[0].id);
+                scrollToBlockOrGroup(blk.id, blk.groups[0]?.id);
+              },
+            },
+            [
+              el('div', { className: 'sidebar-block-top' }, [
+                el('span', {
+                  className: 'tabular-nums',
+                  textContent: `#${String(blk.index + 1).padStart(2, '0')}`,
+                }),
+                el('span', {
+                  className: `tabular-nums${hasFlag ? ' status-needs_review' : ''}`,
+                  textContent: `${done}/${blk.groups.length}${hasFlag ? ' ⚠' : ''}`,
+                }),
+              ]),
+              el('div', { className: 'sidebar-block-preview', textContent: previewText }),
+            ],
+          ),
+        );
+      }
+
+      // Preserve active memo, unmatched-input, sentence-edit, or clause-note focus across re-renders
+      const activeEl = document.activeElement;
+      const activeMemoGroupId = activeEl?.dataset?.memoGroupId || null;
+      const activeUnmatchedKey = activeEl?.dataset?.unmatchedInputKey || null;
+      const activeEditSentenceId = activeEl?.dataset?.editSentenceId || null;
+      const activeClauseNoteId = activeEl?.dataset?.clauseNoteId || null;
+      const hasTrackedInput =
+        activeMemoGroupId || activeUnmatchedKey || activeEditSentenceId || activeClauseNoteId;
+      const selectionStart = hasTrackedInput ? activeEl.selectionStart : null;
+      const selectionEnd = hasTrackedInput ? activeEl.selectionEnd : null;
+
+      renderVisibleWindow(true);
+
+      const restoreFocus = (selector) => {
+        const restored = blocksList.querySelector(selector);
+        if (restored) {
+          restored.focus({ preventScroll: true });
+          if (selectionStart !== null && selectionEnd !== null) {
+            restored.setSelectionRange(selectionStart, selectionEnd);
+          }
+        }
+      };
+
+      if (activeMemoGroupId) {
+        restoreFocus(`textarea[data-memo-group-id="${CSS.escape(activeMemoGroupId)}"]`);
+      } else if (activeUnmatchedKey) {
+        restoreFocus(`textarea[data-unmatched-input-key="${CSS.escape(activeUnmatchedKey)}"]`);
+      } else if (activeEditSentenceId) {
+        restoreFocus(`textarea[data-edit-sentence-id="${CSS.escape(activeEditSentenceId)}"]`);
+      } else if (activeClauseNoteId) {
+        restoreFocus(`input[data-clause-note-id="${CSS.escape(activeClauseNoteId)}"]`);
+      }
+    } else {
+      // Only selection/toast/sidebar/modal state changed: update active/selected classes in place
+      const activeBlockId = activeProject
+        ? activeProject.blocks.find((b) =>
+            b.groups.some((g) => g.id === state.selectedGroupId),
+          )?.id || null
+        : null;
+      for (const item of sidebarList.querySelectorAll('.sidebar-block-item')) {
+        item.classList.toggle('is-active', item.dataset.blockId === activeBlockId);
+      }
+      for (const grpEl of blocksList.querySelectorAll('.alignment-group')) {
+        grpEl.classList.toggle('is-selected', grpEl.dataset.groupId === state.selectedGroupId);
+      }
     }
 
     // Toasts
@@ -2440,6 +2613,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     modalRoot,
     render,
     stepSelectedGroup,
+    scrollViewportBy,
     scrollToBlockOrGroup,
     jumpToLastFocused,
     markCurrentSelection,

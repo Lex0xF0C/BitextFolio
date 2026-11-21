@@ -517,6 +517,7 @@ a:focus-visible,
 .blocks-viewport {
   flex: 1;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 20px 24px 80px;
 }
 
