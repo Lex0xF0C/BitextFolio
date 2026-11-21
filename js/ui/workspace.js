@@ -10,14 +10,14 @@ import {
   findWaitingClausePairId,
   suggestDeterministicClauseChunks,
 } from '../core/clauses.js';
-import { checkGroupGlossary } from '../core/glossary.js';
+import { checkGroupGlossary, collectGroupHighlightSpans } from '../core/glossary.js';
 import { buildDuplicateJaIndex, detectGroupHints } from '../core/hints.js';
 import {
   computeMarkerCoveragePercent,
   hasMarkerOverlap,
   isRangeFullyMarked,
 } from '../core/markers.js';
-import { extractJapaneseCandidateTerms, findTmMatches } from '../core/tm.js';
+import { extractJapaneseCandidateTerms } from '../core/tm.js';
 import {
   blockHasActiveHints,
   blockHasGlossaryIssues,
@@ -75,14 +75,14 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       el('button', {
         type: 'button',
         className: 'nav-action-btn',
-        textContent: '用語集・逆引き',
+        textContent: '翻訳メモリ・用語集',
         onClick: () => store.openModal('glossary', 'list'),
       }),
       el('button', {
         type: 'button',
         className: 'nav-action-btn',
-        textContent: '翻訳メモリ・用語抽出',
-        onClick: () => store.openModal('tm', 'tm'),
+        textContent: '用語候補抽出',
+        onClick: () => store.openModal('glossary', 'candidates'),
       }),
       el('button', {
         type: 'button',
@@ -176,10 +176,24 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
 
   const filterControl = el('div', { className: 'segmented-control', role: 'tablist', 'aria-label': '状態フィルタ' });
   const layoutControl = el('div', { className: 'segmented-control', role: 'group', 'aria-label': '表示レイアウト' });
+  const typoToggleBtn = el('button', {
+    type: 'button',
+    className: 'btn btn-sm',
+    title: '登録語句に対する和文の1〜2文字誤記・脱字・衍字チェックをオン/オフします',
+    onClick: async () => {
+      const nextOn = store.state.jaNormOptions?.fuzzyTypoCheck === false;
+      await store.setJaNormOptions({ fuzzyTypoCheck: nextOn });
+      store.showToast(
+        nextOn
+          ? '訳語の誤記・脱字・衍字チェックを ON にしました'
+          : '訳語の誤記・脱字・衍字チェックを OFF にしました',
+      );
+    },
+  });
 
   const toolbarEl = el('div', { className: 'workspace-toolbar' }, [
     el('div', { className: 'toolbar-group' }, [sidebarToggleBtn, filterControl]),
-    el('div', { className: 'toolbar-group' }, [layoutControl]),
+    el('div', { className: 'toolbar-group' }, [typoToggleBtn, layoutControl]),
   ]);
 
   const topSpacer = el('div', { className: 'virtual-spacer' });
@@ -529,126 +543,84 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     items.push(el('div', { className: 'context-menu-divider', role: 'separator' }));
 
     if (lang === 'en') {
-      const targetEn = picked.text || enPlain;
-      if (targetEn) {
-        const targetJa = rememberedForGroup || jaPlain;
-        const jaPreview = targetJa ? `「${truncateLabel(targetJa, 22)}」` : '（和文なし）';
+      const selectedEn = selRange ? selRange.text.trim() : '';
+      const defaultEn = selectedEn || (enPlain.length <= 48 ? enPlain : '');
+      const targetJa = rememberedForGroup || (jaSuggestions.length > 0 ? jaSuggestions[0] : '');
 
+      if (selectedEn && rememberedForGroup) {
         items.push(
           el('button', {
             type: 'button',
-            className: `context-menu-item${!selRange ? ' is-primary' : ''}`,
-            disabled: !targetJa,
-            textContent: `翻訳メモリ (TM) に即登録 ⇔ ${jaPreview}`,
+            className: 'context-menu-item is-primary',
+            textContent: `TM・用語集に即登録 ⇔ 「${truncateLabel(rememberedForGroup, 20)}」`,
             onClick: async () => {
               closeContextMenu();
-              await store.saveCustomTmPair({
-                enPlain: targetEn,
-                jaPlain: targetJa,
-                groupId: group.id,
+              clearBrowserSelection();
+              await store.registerTermPair({
+                enHeadword: selectedEn,
+                jaAccepted: [rememberedForGroup],
+                caseSensitive: /^[A-Z0-9-]+$/.test(selectedEn),
+                notes: '本文右クリックより登録',
               });
-            },
-          }),
-        );
-        items.push(
-          el('button', {
-            type: 'button',
-            className: 'context-menu-item',
-            textContent: '対訳を調整して翻訳メモリ (TM) に登録…',
-            onClick: () => {
-              closeContextMenu();
-              openQuickRegister({
-                mode: 'tm',
-                blockId: block.id,
-                groupId: group.id,
-                enText: targetEn,
-                jaText: targetJa,
-                jaSuggestions,
-              });
-            },
-          }),
-        );
-        items.push(
-          el('button', {
-            type: 'button',
-            className: 'context-menu-item',
-            textContent: '用語集に即登録（和文候補を選択）…',
-            onClick: () => {
-              closeContextMenu();
-              openQuickRegister({
-                mode: 'glossary',
-                blockId: block.id,
-                groupId: group.id,
-                enText: targetEn,
-                jaText: rememberedForGroup || jaSuggestions[0] || '',
-                jaSuggestions,
-              });
-            },
-          }),
-        );
-        items.push(
-          el('button', {
-            type: 'button',
-            className: 'context-menu-item',
-            disabled: !enPlain || !jaPlain,
-            textContent: 'この対訳枠を「確認済」にしてTM登録',
-            onClick: () => {
-              closeContextMenu();
-              store.setGroupStatus(block.id, group.id, 'verified');
             },
           }),
         );
       }
+
+      items.push(
+        el('button', {
+          type: 'button',
+          className: `context-menu-item${selectedEn && !rememberedForGroup ? ' is-primary' : ''}`,
+          textContent: selectedEn
+            ? '選択英語語句をTM・用語集に登録（対訳を調整）…'
+            : '単語・語句をTM・用語集に新規登録…',
+          onClick: () => {
+            closeContextMenu();
+            openQuickRegister({
+              blockId: block.id,
+              groupId: group.id,
+              enText: defaultEn,
+              jaText: targetJa,
+              jaSuggestions,
+            });
+          },
+        }),
+      );
     } else {
-      const targetJa = picked.text || jaPlain;
-      if (targetJa) {
-        items.push(
-          el('button', {
-            type: 'button',
-            className: `context-menu-item${!selRange ? ' is-primary' : ''}`,
-            textContent: 'この和文を対訳ペア用に記憶（次に英文側で右クリック）',
-            onClick: () => {
-              closeContextMenu();
-              rememberedJaSelection = { groupId: group.id, text: targetJa };
-              store.showToast(`和文を記憶しました: 「${truncateLabel(targetJa, 24)}」`);
-            },
-          }),
-        );
+      const selectedJa = selRange ? selRange.text.trim() : '';
+      if (selectedJa) {
         items.push(
           el('button', {
             type: 'button',
             className: 'context-menu-item',
-            disabled: !enPlain,
-            textContent: 'この枠の英文 ⇔ 選択和文をTMに即登録',
-            onClick: async () => {
-              closeContextMenu();
-              await store.saveCustomTmPair({
-                enPlain,
-                jaPlain: targetJa,
-                groupId: group.id,
-              });
-            },
-          }),
-        );
-        items.push(
-          el('button', {
-            type: 'button',
-            className: 'context-menu-item',
-            textContent: '対訳を調整してTM／用語集に登録…',
+            textContent: 'この和文語句を対訳ペア用に記憶（次に英文側で右クリック）',
             onClick: () => {
               closeContextMenu();
-              openQuickRegister({
-                mode: 'glossary',
-                blockId: block.id,
-                groupId: group.id,
-                enText: enPlain,
-                jaText: targetJa,
-                jaSuggestions,
-              });
+              rememberedJaSelection = { groupId: group.id, text: selectedJa };
+              store.showToast(`和文語句を記憶しました: 「${truncateLabel(selectedJa, 24)}」`);
             },
           }),
         );
       }
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: selectedJa
+            ? '選択和文をTM・用語集に登録（英語を入力）…'
+            : '単語・語句をTM・用語集に新規登録…',
+          onClick: () => {
+            closeContextMenu();
+            openQuickRegister({
+              blockId: block.id,
+              groupId: group.id,
+              enText: enPlain.length <= 48 ? enPlain : '',
+              jaText: selectedJa,
+              jaSuggestions,
+            });
+          },
+        }),
+      );
     }
 
     showContextMenuAt(e, items);
@@ -895,8 +867,10 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         const jaPlain = g.jaIds.map((id) => jaMap.get(id)?.plainText || '').join(' ');
         const hasGlossaryIssue =
           store.state.glossary.length > 0 &&
-          checkGroupGlossary(enPlain, jaPlain, store.state.glossary, store.state.jaNormOptions)
-            .hasIssues;
+          checkGroupGlossary(enPlain, jaPlain, store.state.glossary, store.state.jaNormOptions, {
+            groupId: g.id,
+            dismissedHints,
+          }).hasIssues;
         const hasHintIssue = detectGroupHints(g, blk, {
           duplicateJaIndex: dupIdx,
           dismissedHints,
@@ -971,7 +945,16 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     scrollToBlockOrGroup(target.blockId, target.groupId, { onlyIfOutside: true });
   }
 
-  function renderSentenceNode(block, group, groupIdx, lang, sentence, listIdx, totalInLang) {
+  function renderSentenceNode(
+    block,
+    group,
+    groupIdx,
+    lang,
+    sentence,
+    listIdx,
+    totalInLang,
+    termSpans = [],
+  ) {
     const isSplitting =
       store.state.activeSplitTarget &&
       store.state.activeSplitTarget.blockId === block.id &&
@@ -1016,7 +999,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     const clauseHighlights = collectSentenceClauseHighlights(group, lang, sentence.id);
     const textEl = el('p', { className: 'sentence-text' });
     textEl.appendChild(
-      renderRichSentenceFragment(sentence.rawText, sentence.markers, clauseHighlights),
+      renderRichSentenceFragment(sentence.rawText, sentence.markers, clauseHighlights, termSpans),
     );
 
     itemEl.appendChild(el('div', { className: 'sentence-top-row' }, [handle, idBadge, textEl]));
@@ -1431,6 +1414,14 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       const jaItems = group.jaIds.map((id) => jaMap.get(id)?.item).filter(Boolean);
       const enPlain = enItems.map((s) => s.plainText).join(' ');
       const jaPlain = jaItems.map((s) => s.plainText).join(' ');
+      const dismissedHints = store.getActiveProject()?.dismissedHints || {};
+      const { enSpansBySentenceId, jaSpansBySentenceId } = collectGroupHighlightSpans(
+        enItems,
+        jaItems,
+        store.state.glossary,
+        store.state.jaNormOptions,
+        { groupId: group.id, dismissedHints },
+      );
 
       const renderUnmatchedCellEditor = (lang) => {
         const draftKey = `${group.id}:${lang}`;
@@ -1503,6 +1494,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
                 entry.item,
                 entry.idx,
                 block.enSentences.length,
+                enSpansBySentenceId.get(eid) || [],
               ),
             );
           }
@@ -1529,6 +1521,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
                 entry.item,
                 entry.idx,
                 block.jaSentences.length,
+                jaSpansBySentenceId.get(jid) || [],
               ),
             );
           }
@@ -1785,6 +1778,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
                   enSentenceObj.markers,
                   pair.enSpan.start,
                   pair.enSpan.end,
+                  enSpansBySentenceId.get(enSentenceObj.id) || [],
                 ),
               );
             } else {
@@ -1862,6 +1856,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
                   jaSentenceObj.markers,
                   pair.jaSpan.start,
                   pair.jaSpan.end,
+                  jaSpansBySentenceId.get(jaSentenceObj.id) || [],
                 ),
               );
             } else {
@@ -1942,7 +1937,8 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           type: 'text',
           className: 'text-input',
           value: qState.enText,
-          'aria-label': '登録する英語語句・文',
+          placeholder: '登録する英語の単語・語句を入力...',
+          'aria-label': '登録する英語語句',
           onInput: (ev) => {
             qState.enText = ev.target.value;
           },
@@ -1952,7 +1948,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           className: 'text-input',
           value: qState.jaText,
           dataset: { quickRegJa: group.id },
-          placeholder: '対応する日本語訳を入力または下の候補をクリック...',
+          placeholder: '対応する日本語訳を入力（| で複数可）または下の候補をクリック...',
           'aria-label': '登録する日本語訳',
           onInput: (ev) => {
             qState.jaText = ev.target.value;
@@ -1963,27 +1959,17 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           const enVal = enQuickInput.value.trim();
           const jaVal = jaQuickInput.value.trim();
           if (!enVal || !jaVal) {
-            store.showToast('英語と日本語の両方を入力してください', true);
+            store.showToast('英語語句と日本語訳の両方を入力してください', true);
             return;
           }
-          if (qState.mode === 'tm') {
-            const ok = await store.saveCustomTmPair({
-              enPlain: enVal,
-              jaPlain: jaVal,
-              groupId: group.id,
-            });
-            if (ok) quickRegisterState = null;
-          } else {
-            await store.saveGlossaryItem({
-              enHeadword: enVal,
-              enVariants: [],
-              jaAccepted: jaVal.split(/[|;；、,]/).map((s) => s.trim()).filter(Boolean),
-              jaDeprecated: [],
-              caseSensitive: /^[A-Z0-9-]+$/.test(enVal),
-              notes: '本文の右クリックメニューから登録',
-            });
-            quickRegisterState = null;
-          }
+          const ok = await store.registerTermPair({
+            enHeadword: enVal,
+            jaAccepted: jaVal.split(/[|;；、,]/).map((s) => s.trim()).filter(Boolean),
+            caseSensitive: /^[A-Z0-9-]+$/.test(enVal),
+            notes: '本文から登録',
+            mergeIfExists: true,
+          });
+          if (ok) quickRegisterState = null;
           renderVisibleWindow(true);
         };
 
@@ -1999,27 +1985,6 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         };
         enQuickInput.addEventListener('keydown', onQuickKey);
         jaQuickInput.addEventListener('keydown', onQuickKey);
-
-        const modeBar = el('div', { className: 'segmented-control' }, [
-          el('button', {
-            type: 'button',
-            className: `segmented-btn${qState.mode === 'tm' ? ' is-active' : ''}`,
-            textContent: '翻訳メモリ (TM) に登録',
-            onClick: () => {
-              qState.mode = 'tm';
-              renderVisibleWindow(true);
-            },
-          }),
-          el('button', {
-            type: 'button',
-            className: `segmented-btn${qState.mode === 'glossary' ? ' is-active' : ''}`,
-            textContent: '用語集に登録',
-            onClick: () => {
-              qState.mode = 'glossary';
-              renderVisibleWindow(true);
-            },
-          }),
-        ]);
 
         const chipsRow =
           qState.jaSuggestions && qState.jaSuggestions.length > 0
@@ -2043,7 +2008,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         groupEl.appendChild(
           el('div', { className: 'quick-register-bar' }, [
             el('div', { className: 'ja-block-editor-header' }, [
-              modeBar,
+              el('strong', { textContent: '翻訳メモリ・用語集に登録（単語・語句ペア）' }),
               el('button', {
                 type: 'button',
                 className: 'btn btn-xs',
@@ -2056,11 +2021,11 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             ]),
             el('div', { className: 'glossary-form-grid' }, [
               el('div', { className: 'form-field' }, [
-                el('label', { className: 'form-label', textContent: '英語（EN）' }),
+                el('label', { className: 'form-label', textContent: '英語語句（EN）' }),
                 enQuickInput,
               ]),
               el('div', { className: 'form-field' }, [
-                el('label', { className: 'form-label', textContent: '日本語（JA）' }),
+                el('label', { className: 'form-label', textContent: '日本語訳（JA）' }),
                 jaQuickInput,
               ]),
             ]),
@@ -2069,7 +2034,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
               el('button', {
                 type: 'button',
                 className: 'btn btn-primary btn-xs',
-                textContent: qState.mode === 'tm' ? '翻訳メモリに登録 (Enter)' : '用語集に登録 (Enter)',
+                textContent: '翻訳メモリ・用語集に登録 (Enter)',
                 onClick: submitQuick,
               }),
             ]),
@@ -2100,12 +2065,15 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         jaPlain,
         store.state.glossary,
         store.state.jaNormOptions,
+        { groupId: group.id, dismissedHints },
       );
 
       if (
         glossaryCheck.deprecatedUsed.length > 0 ||
+        glossaryCheck.fuzzyTypos.length > 0 ||
         glossaryCheck.missingAccepted.length > 0 ||
-        glossaryCheck.matchedOk.length > 0
+        glossaryCheck.matchedOk.length > 0 ||
+        glossaryCheck.dismissedFuzzyTypos.length > 0
       ) {
         const glossaryStrip = el('div', { className: 'glossary-strip' });
         for (const item of glossaryCheck.deprecatedUsed) {
@@ -2118,6 +2086,23 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
               className: 'glossary-warning-line',
               textContent: `⚠ 用語注意（非推奨訳語）: 「${item.foundDeprecated.join(', ')}」が使用されています ${rec}`,
             }),
+          );
+        }
+        for (const item of glossaryCheck.fuzzyTypos) {
+          glossaryStrip.appendChild(
+            el('div', { className: 'hint-item-row' }, [
+              el('div', {
+                className: 'glossary-typo-line',
+                textContent: `⚠ 誤記・脱字の疑い: 「${item.span.text}」 (${item.span.diffSummary} / 登録: ${item.entry.enHeadword} ⇔ ${item.span.term})`,
+              }),
+              el('button', {
+                type: 'button',
+                className: 'btn btn-xs',
+                textContent: '許容・非表示',
+                title: '誤検出または意図的な表現として非表示にします（後で復元できます）',
+                onClick: () => store.dismissHint(item.hintId),
+              }),
+            ]),
           );
         }
         for (const item of glossaryCheck.missingAccepted) {
@@ -2139,10 +2124,26 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             }),
           );
         }
+        if (glossaryCheck.dismissedFuzzyTypos.length > 0) {
+          glossaryStrip.appendChild(
+            el('div', { className: 'hint-dismissed-row' }, [
+              el('span', {
+                className: 'meta-sep',
+                textContent: `非表示済みの誤記候補: ${glossaryCheck.dismissedFuzzyTypos.length}件`,
+              }),
+              el('button', {
+                type: 'button',
+                className: 'btn btn-ghost btn-xs',
+                textContent: '元に戻す',
+                onClick: () =>
+                  store.restoreHints(glossaryCheck.dismissedFuzzyTypos.map((d) => d.hintId)),
+              }),
+            ]),
+          );
+        }
         groupEl.appendChild(glossaryStrip);
       }
 
-      const dismissedHints = store.getActiveProject()?.dismissedHints || {};
       const hintCheck = detectGroupHints(group, block, {
         duplicateJaIndex: currentDupJaIndex,
         dismissedHints,
@@ -2188,40 +2189,6 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           );
         }
         groupEl.appendChild(hintsStrip);
-      }
-
-      if (enPlain.trim() && store.state.tmRecords.length > 0) {
-        const tmMatches = findTmMatches(enPlain, store.state.tmRecords, {
-          threshold: 0.48,
-          maxResults: 2,
-          excludeGroupId: group.id,
-          currentJaPlain: jaPlain,
-        });
-        if (tmMatches.length > 0) {
-          const tmStrip = el('div', { className: 'tm-strip' });
-          for (const m of tmMatches) {
-            const pct = Math.round(m.similarity * 100);
-            tmStrip.appendChild(
-              el('div', {
-                className: m.hasDiscrepancy ? 'tm-warning-line' : 'tm-match-line',
-              }, [
-                el('strong', {
-                  textContent: m.hasDiscrepancy
-                    ? `⚠ 翻訳メモリ過去訳と差異あり（類似度 ${pct}%）: `
-                    : `TM類似訳（${pct}%）: `,
-                }),
-                el('span', {
-                  textContent: `「${m.record.jaPlain}」`,
-                }),
-                el('span', {
-                  className: 'meta-sep',
-                  textContent: ` — EN: ${m.record.enPlain}`,
-                }),
-              ]),
-            );
-          }
-          groupEl.appendChild(tmStrip);
-        }
       }
 
       const hints = computeGroupHints(enItems, jaItems);
@@ -2585,9 +2552,14 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     }
 
     // Filter & Layout controls (update only when changed)
-    const nextToolbarSig = `${state.filterStatus}:${state.layoutMode}`;
+    const fuzzyCheckOn = state.jaNormOptions?.fuzzyTypoCheck !== false;
+    const nextToolbarSig = `${state.filterStatus}:${state.layoutMode}:${fuzzyCheckOn}`;
     if (nextToolbarSig !== lastToolbarSig) {
       lastToolbarSig = nextToolbarSig;
+      typoToggleBtn.textContent = fuzzyCheckOn ? '誤記チェック: ON' : '誤記チェック: OFF';
+      typoToggleBtn.className = `btn btn-sm${fuzzyCheckOn ? ' is-clause-active' : ''}`;
+      typoToggleBtn.setAttribute('aria-pressed', String(fuzzyCheckOn));
+
       const filterDefs = [
         ['all', 'すべて'],
         ['unread', '未読'],
@@ -2690,7 +2662,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         const hasFlag =
           (blk.warnings || []).length > 0 ||
           blk.groups.some((g) => g.status === 'needs_review' || g.status === 'source_changed') ||
-          blockHasGlossaryIssues(blk, state.glossary, state.jaNormOptions) ||
+          blockHasGlossaryIssues(blk, state.glossary, state.jaNormOptions, activeDismissedHints) ||
           blockHasActiveHints(blk, currentDupJaIndex, activeDismissedHints);
         const isActive = blk.groups.some((g) => g.id === state.selectedGroupId);
         const previewText =

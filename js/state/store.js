@@ -35,7 +35,6 @@ import {
 import { DEFAULT_JA_NORM_OPTIONS, SAMPLE_GLOSSARY_ENTRIES } from '../core/glossary.js';
 import { reconcileReloadedBlocks } from '../core/hash-diff.js';
 import { DEFAULT_ABBREVIATIONS } from '../core/sentence-splitter.js';
-import { createTmRecord } from '../core/tm.js';
 import {
   clearAllGlossaryEntries,
   clearAllTmRecords,
@@ -73,15 +72,14 @@ export function createAppStore() {
     editingJaBlockIds: new Set(),
     editingSentenceTarget: null, // { blockId, lang, sentenceId }
     activeSplitTarget: null, // { blockId, lang, sentenceId, offset }
-    activeModal: null, // null | 'import' | 'json' | 'settings' | 'shortcuts' | 'glossary' | 'tm'
-    glossaryTab: 'list', // 'list' | 'lookup' | 'csv'
-    tmModalTab: 'tm', // 'tm' | 'candidates'
+    activeModal: null, // null | 'import' | 'json' | 'settings' | 'shortcuts' | 'glossary'
+    glossaryTab: 'list', // 'list' | 'candidates' | 'lookup' | 'csv'
     importModalMode: 'new', // 'new' | 'replace'
     abbreviations: [...DEFAULT_ABBREVIATIONS],
     glossary: [],
     glossaryRevision: 0,
     jaNormOptions: { ...DEFAULT_JA_NORM_OPTIONS },
-    tmRecords: [],
+    tmRecords: [], // legacy sentence-level records if any remain in IndexedDB
     tmRevision: 0,
     toastQueue: [],
   };
@@ -182,6 +180,53 @@ export function createAppStore() {
       state.glossary = [...SAMPLE_GLOSSARY_ENTRIES];
     }
 
+    // One-time migration: merge legacy short phrase TM entries into unified glossary/TM store
+    const tmMigrated = await getSetting('tmMigratedToUnified', false);
+    if (!tmMigrated && state.tmRecords.length > 0) {
+      const existingByLower = new Map(
+        state.glossary.map((g) => [(g.enHeadword || '').trim().toLowerCase(), g]),
+      );
+      let migratedCount = 0;
+      for (const rec of state.tmRecords) {
+        const cleanEn = String(rec?.enPlain || '').trim();
+        const cleanJa = String(rec?.jaPlain || '').trim();
+        if (!cleanEn || !cleanJa) continue;
+        const wordCount = cleanEn.split(/\s+/).length;
+        const looksLikeFullSentence = wordCount > 5 || /[.!?。！？]$/.test(cleanEn);
+        if (looksLikeFullSentence) continue;
+        const key = cleanEn.toLowerCase();
+        const existing = existingByLower.get(key);
+        if (existing) {
+          if (!existing.jaAccepted.includes(cleanJa)) {
+            const updated = { ...existing, jaAccepted: [...existing.jaAccepted, cleanJa] };
+            await saveGlossaryEntry(updated);
+            existingByLower.set(key, updated);
+          }
+        } else {
+          const entry = {
+            id: nextLocalId('glo'),
+            enHeadword: cleanEn,
+            enVariants: [],
+            jaAccepted: [cleanJa],
+            jaDeprecated: [],
+            caseSensitive: /^[A-Z0-9-]+$/.test(cleanEn),
+            notes: rec.sourceDocTitle ? `旧TMより統合 (${rec.sourceDocTitle})` : '旧TMより統合',
+          };
+          await saveGlossaryEntry(entry);
+          existingByLower.set(key, entry);
+        }
+        await deleteTmRecord(rec.id);
+        migratedCount += 1;
+      }
+      if (migratedCount > 0) {
+        state.glossary = await listGlossaryEntries();
+        state.tmRecords = await listTmRecords();
+      }
+      await setSetting('tmMigratedToUnified', true);
+    } else if (!tmMigrated) {
+      await setSetting('tmMigratedToUnified', true);
+    }
+
     if (savedProjects.length > 0) {
       state.projects = savedProjects;
       const found = savedProjects.find((p) => p.id === savedActiveId) || savedProjects[0];
@@ -240,15 +285,17 @@ export function createAppStore() {
       notify();
     },
     openModal(modalName, subOption = null) {
-      state.activeModal = modalName;
-      if (modalName === 'import' && subOption) {
-        state.importModalMode = subOption;
-      }
-      if (modalName === 'glossary' && subOption) {
-        state.glossaryTab = subOption;
-      }
-      if (modalName === 'tm' && subOption) {
-        state.tmModalTab = subOption;
+      if (modalName === 'tm') {
+        state.activeModal = 'glossary';
+        state.glossaryTab = subOption === 'candidates' ? 'candidates' : 'list';
+      } else {
+        state.activeModal = modalName;
+        if (modalName === 'import' && subOption) {
+          state.importModalMode = subOption;
+        }
+        if (modalName === 'glossary' && subOption) {
+          state.glossaryTab = subOption;
+        }
       }
       notify();
     },
@@ -365,6 +412,10 @@ export function createAppStore() {
         state.abbreviations = settings.abbreviations;
         await setSetting('abbreviations', state.abbreviations);
       }
+      if (settings && settings.jaNormOptions && typeof settings.jaNormOptions === 'object') {
+        state.jaNormOptions = { ...DEFAULT_JA_NORM_OPTIONS, ...settings.jaNormOptions };
+        await setSetting('jaNormOptions', state.jaNormOptions);
+      }
       if (Array.isArray(glossary) && glossary.length > 0) {
         for (const entry of glossary) {
           if (entry && entry.id && entry.enHeadword) {
@@ -375,13 +426,44 @@ export function createAppStore() {
         state.glossaryRevision += 1;
       }
       if (Array.isArray(tmRecords) && tmRecords.length > 0) {
+        const existingByLower = new Map(
+          state.glossary.map((g) => [(g.enHeadword || '').trim().toLowerCase(), g]),
+        );
+        let mergedFromBackup = false;
         for (const rec of tmRecords) {
-          if (rec && rec.id && rec.enPlain && rec.jaPlain) {
-            await saveTmRecord(rec);
+          const cleanEn = String(rec?.enPlain || '').trim();
+          const cleanJa = String(rec?.jaPlain || '').trim();
+          if (!cleanEn || !cleanJa) continue;
+          const wordCount = cleanEn.split(/\s+/).length;
+          if (wordCount > 5 || /[.!?。！？]$/.test(cleanEn)) continue;
+          const key = cleanEn.toLowerCase();
+          const existing = existingByLower.get(key);
+          if (existing) {
+            if (!existing.jaAccepted.includes(cleanJa)) {
+              const updated = { ...existing, jaAccepted: [...existing.jaAccepted, cleanJa] };
+              await saveGlossaryEntry(updated);
+              existingByLower.set(key, updated);
+              mergedFromBackup = true;
+            }
+          } else {
+            const entry = {
+              id: nextLocalId('glo'),
+              enHeadword: cleanEn,
+              enVariants: [],
+              jaAccepted: [cleanJa],
+              jaDeprecated: [],
+              caseSensitive: /^[A-Z0-9-]+$/.test(cleanEn),
+              notes: 'JSONバックアップより取込',
+            };
+            await saveGlossaryEntry(entry);
+            existingByLower.set(key, entry);
+            mergedFromBackup = true;
           }
         }
-        state.tmRecords = await listTmRecords();
-        state.tmRevision += 1;
+        if (mergedFromBackup) {
+          state.glossary = await listGlossaryEntries();
+          state.glossaryRevision += 1;
+        }
       }
       const existingMap = new Map(state.projects.map((p) => [p.id, p]));
       for (const proj of projects) {
@@ -401,81 +483,86 @@ export function createAppStore() {
       showToast(`${projects.length}件のドキュメントをインポートしました`);
       notify();
     },
-    async recordGroupToTm(block, group, projTitle = '', projId = '') {
-      if (!block || !group) return;
-      const enMap = new Map((block.enSentences || []).map((s) => [s.id, s]));
-      const jaMap = new Map((block.jaSentences || []).map((s) => [s.id, s]));
-      const enPlain = (group.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ').trim();
-      const jaPlain = (group.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ').trim();
-      if (!enPlain || !jaPlain) return;
-      const rec = createTmRecord({
-        enPlain,
-        jaPlain,
-        sourceDocId: projId,
-        sourceDocTitle: projTitle,
-        groupId: group.id,
-      });
-      await saveTmRecord(rec);
-      const others = state.tmRecords.filter((r) => r.id !== rec.id);
-      state.tmRecords = [rec, ...others];
-      state.tmRevision += 1;
-      notify();
-    },
-    async saveCustomTmPair({ enPlain, jaPlain, groupId = '' }) {
-      const cleanEn = String(enPlain || '').trim();
-      const cleanJa = String(jaPlain || '').trim();
-      if (!cleanEn || !cleanJa) {
-        showToast('英語と日本語の両方を入力してください', true);
+    async registerTermPair({
+      enHeadword,
+      jaAccepted = [],
+      jaDeprecated = [],
+      enVariants = [],
+      caseSensitive = false,
+      notes = '',
+      mergeIfExists = true,
+    }) {
+      const cleanEn = String(enHeadword || '').trim();
+      const accList = (Array.isArray(jaAccepted) ? jaAccepted : [jaAccepted])
+        .map((s) => String(s || '').trim())
+        .filter(Boolean);
+      const depList = (Array.isArray(jaDeprecated) ? jaDeprecated : [jaDeprecated])
+        .map((s) => String(s || '').trim())
+        .filter(Boolean);
+      if (!cleanEn || (accList.length === 0 && depList.length === 0)) {
+        showToast('英語語句と日本語訳の両方を入力してください', true);
         return false;
       }
-      const proj = getActiveProject();
-      const rec = createTmRecord({
-        enPlain: cleanEn,
-        jaPlain: cleanJa,
-        sourceDocId: proj?.id || '',
-        sourceDocTitle: proj?.title || '',
-        groupId,
-      });
-      await saveTmRecord(rec);
-      const others = state.tmRecords.filter((r) => r.id !== rec.id);
-      state.tmRecords = [rec, ...others];
-      state.tmRevision += 1;
-      showToast(`翻訳メモリに登録しました: 「${rec.enPlain.slice(0, 28)}${rec.enPlain.length > 28 ? '…' : ''}」`);
+
+      const existing = mergeIfExists
+        ? state.glossary.find((g) => (g.enHeadword || '').trim().toLowerCase() === cleanEn.toLowerCase())
+        : null;
+
+      const entry = existing
+        ? {
+            ...existing,
+            enVariants: [...new Set([...(existing.enVariants || []), ...enVariants])],
+            jaAccepted: [...new Set([...(existing.jaAccepted || []), ...accList])],
+            jaDeprecated: [...new Set([...(existing.jaDeprecated || []), ...depList])],
+            notes: existing.notes || String(notes || '').trim(),
+          }
+        : {
+            id: nextLocalId('glo'),
+            enHeadword: cleanEn,
+            enVariants: enVariants.map((s) => String(s || '').trim()).filter(Boolean),
+            jaAccepted: [...new Set(accList)],
+            jaDeprecated: [...new Set(depList)],
+            caseSensitive: Boolean(caseSensitive),
+            notes: String(notes || '').trim(),
+          };
+
+      await saveGlossaryEntry(entry);
+      state.glossary = await listGlossaryEntries();
+      state.glossaryRevision += 1;
+      showToast(
+        existing
+          ? `翻訳メモリ・用語集を更新しました: 「${entry.enHeadword}」`
+          : `翻訳メモリ・用語集に登録しました: 「${entry.enHeadword}」`,
+      );
       notify();
       return true;
     },
+    async saveCustomTmPair({ enPlain, jaPlain }) {
+      return this.registerTermPair({
+        enHeadword: enPlain,
+        jaAccepted: [jaPlain],
+        caseSensitive: /^[A-Z0-9-]+$/.test(String(enPlain || '').trim()),
+        notes: '本文から登録',
+        mergeIfExists: true,
+      });
+    },
     setGroupStatus(blockId, groupId, status) {
       state.selectedGroupId = groupId;
-      let verifiedBlock = null;
-      let verifiedGroup = null;
-      let projTitle = '';
-      let projId = '';
       updateActiveProject((proj) => {
-        projTitle = proj.title;
-        projId = proj.id;
         const blocks = proj.blocks.map((blk) => {
           if (blk.id !== blockId) return blk;
           const groups = blk.groups.map((g) => {
             if (g.id !== groupId) return g;
-            const nextGroup = {
+            return {
               ...g,
               status,
               confirmedAlignment: status === 'verified' ? true : g.confirmedAlignment,
             };
-            if (status === 'verified') {
-              verifiedGroup = nextGroup;
-            }
-            return nextGroup;
           });
-          const synced = syncBlockMeta({ ...blk, groups });
-          if (status === 'verified') verifiedBlock = synced;
-          return synced;
+          return syncBlockMeta({ ...blk, groups });
         });
         return { ...proj, lastFocusedGroupId: groupId, blocks };
       });
-      if (status === 'verified' && verifiedBlock && verifiedGroup) {
-        this.recordGroupToTm(verifiedBlock, verifiedGroup, projTitle, projId);
-      }
       if (status === 'needs_review') {
         state.openMemoGroupIds.add(groupId);
         notify();
@@ -604,9 +691,6 @@ export function createAppStore() {
       showToast('文のテキストを更新しました（他の対応関係はそのまま維持されています）');
     },
     async setBlockAllStatus(blockId, status) {
-      let targetBlock = null;
-      let projTitle = '';
-      let projId = '';
       mutateBlock(
         blockId,
         (blk) => {
@@ -615,19 +699,10 @@ export function createAppStore() {
             status,
             confirmedAlignment: status === 'verified' ? true : g.confirmedAlignment,
           }));
-          targetBlock = syncBlockMeta({ ...blk, groups });
-          return targetBlock;
+          return syncBlockMeta({ ...blk, groups });
         },
         true,
       );
-      if (status === 'verified' && targetBlock) {
-        const proj = getActiveProject();
-        projTitle = proj?.title || '';
-        projId = proj?.id || '';
-        for (const grp of targetBlock.groups) {
-          await this.recordGroupToTm(targetBlock, grp, projTitle, projId);
-        }
-      }
       showToast('ブロック内の全グループの状態を更新しました');
     },
     startSplitSentence(blockId, lang, sentenceId, rawLength) {
@@ -848,46 +923,18 @@ export function createAppStore() {
       updateActiveProject((proj) => ({ ...proj, dismissedHints: {} }), true);
       showToast('すべての非表示ヒントを復元しました');
     },
-    async harvestVerifiedToTm() {
-      const proj = getActiveProject();
-      if (!proj) return;
-      let count = 0;
-      for (const blk of proj.blocks) {
-        const enMap = new Map((blk.enSentences || []).map((s) => [s.id, s]));
-        const jaMap = new Map((blk.jaSentences || []).map((s) => [s.id, s]));
-        for (const grp of blk.groups || []) {
-          if (grp.status !== 'verified') continue;
-          const enPlain = (grp.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ').trim();
-          const jaPlain = (grp.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ').trim();
-          if (!enPlain || !jaPlain) continue;
-          const rec = createTmRecord({
-            enPlain,
-            jaPlain,
-            sourceDocId: proj.id,
-            sourceDocTitle: proj.title,
-            groupId: grp.id,
-          });
-          await saveTmRecord(rec);
-          count += 1;
-        }
-      }
-      state.tmRecords = await listTmRecords();
-      state.tmRevision += 1;
-      showToast(`${count}件の確認済ペアを翻訳メモリに登録しました`);
-      notify();
-    },
     async removeTmRecord(recordId) {
       await deleteTmRecord(recordId);
       state.tmRecords = state.tmRecords.filter((r) => r.id !== recordId);
       state.tmRevision += 1;
-      showToast('翻訳メモリから削除しました');
+      showToast('旧翻訳メモリ記録を削除しました');
       notify();
     },
     async clearTm() {
       await clearAllTmRecords();
       state.tmRecords = [];
       state.tmRevision += 1;
-      showToast('翻訳メモリを空にしました');
+      showToast('旧・文単位TM記録を削除しました');
       notify();
     },
   };

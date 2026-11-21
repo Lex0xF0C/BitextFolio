@@ -231,10 +231,11 @@ export function splitTokensByMarkers(tokens, markers) {
 }
 
 /**
- * Splits inline markup tokens across manual markers and temporary clause-pair spans.
+ * Splits inline markup tokens across manual markers, temporary clause-pair spans,
+ * and registered TM/glossary term spans.
  * @param {Array<{type: string, value: string}>} tokens
- * @param {{markers?: Array<{start:number,end:number}>, pending?: Array<{start:number,end:number}>, checked?: Array<{start:number,end:number}>}} layers
- * @returns {Array<{type: string, value: string, marked: boolean, clauseState: 'none'|'pending'|'checked'}>}
+ * @param {{markers?: Array<{start:number,end:number}>, pending?: Array<{start:number,end:number}>, checked?: Array<{start:number,end:number}>, terms?: Array<{start:number,end:number,status?:'matched'|'deprecated',title?:string}>}} layers
+ * @returns {Array<{type: string, value: string, marked: boolean, clauseState: 'none'|'pending'|'checked', termState: 'none'|'matched'|'deprecated', termTitle: string}>}
  */
 export function splitTokensByHighlights(tokens, layers = {}) {
   if (!Array.isArray(tokens) || tokens.length === 0) return [];
@@ -242,12 +243,52 @@ export function splitTokensByHighlights(tokens, layers = {}) {
   const normMarkers = normalizeMarkerRanges(layers.markers || [], totalLen);
   const normPending = normalizeMarkerRanges(layers.pending || [], totalLen);
   const normChecked = normalizeMarkerRanges(layers.checked || [], totalLen);
+  const normTerms = (Array.isArray(layers.terms) ? layers.terms : [])
+    .filter((t) => t && Number.isFinite(Number(t.start)) && Number.isFinite(Number(t.end)))
+    .map((t) => ({
+      start: Math.max(0, Math.min(totalLen, Math.floor(Number(t.start)))),
+      end: Math.max(0, Math.min(totalLen, Math.floor(Number(t.end)))),
+      status:
+        t.status === 'deprecated'
+          ? 'deprecated'
+          : t.status === 'typo'
+            ? 'typo'
+            : 'matched',
+      title: String(t.title || ''),
+    }))
+    .filter((t) => t.end > t.start);
 
-  if (normMarkers.length === 0 && normPending.length === 0 && normChecked.length === 0) {
-    return tokens.map((t) => ({ ...t, marked: false, clauseState: 'none' }));
+  if (
+    normMarkers.length === 0 &&
+    normPending.length === 0 &&
+    normChecked.length === 0 &&
+    normTerms.length === 0
+  ) {
+    return tokens.map((t) => ({
+      ...t,
+      marked: false,
+      clauseState: 'none',
+      termState: 'none',
+      termTitle: '',
+    }));
   }
 
   const containsSlice = (ranges, a, b) => ranges.some((r) => r.start <= a && r.end >= b);
+  const termPriority = { deprecated: 0, matched: 1, typo: 2 };
+  const findTermSlice = (a, b) => {
+    let matched = null;
+    for (const t of normTerms) {
+      if (t.start <= a && t.end >= b) {
+        if (
+          !matched ||
+          (termPriority[t.status] ?? 9) < (termPriority[matched.status] ?? 9)
+        ) {
+          matched = t;
+        }
+      }
+    }
+    return matched;
+  };
 
   const out = [];
   let cursor = 0;
@@ -260,7 +301,7 @@ export function splitTokensByHighlights(tokens, layers = {}) {
     if (text.length === 0) continue;
 
     const bounds = new Set([tokenStart, tokenEnd]);
-    for (const list of [normMarkers, normPending, normChecked]) {
+    for (const list of [normMarkers, normPending, normChecked, normTerms]) {
       for (const r of list) {
         if (r.start > tokenStart && r.start < tokenEnd) bounds.add(r.start);
         if (r.end > tokenStart && r.end < tokenEnd) bounds.add(r.end);
@@ -278,11 +319,14 @@ export function splitTokensByHighlights(tokens, layers = {}) {
         : containsSlice(normPending, a, b)
           ? 'pending'
           : 'none';
+      const termMatch = findTermSlice(a, b);
       out.push({
         type: token.type,
         value: text.slice(a - tokenStart, b - tokenStart),
         marked,
         clauseState,
+        termState: termMatch ? termMatch.status : 'none',
+        termTitle: termMatch ? termMatch.title : '',
       });
     }
   }
@@ -291,25 +335,26 @@ export function splitTokensByHighlights(tokens, layers = {}) {
 }
 
 /**
- * Slices inline-markup + marker tokens to a sub-interval [rangeStart, rangeEnd)
- * relative to the sentence's plainText, preserving markup and marker states.
+ * Slices inline-markup + marker + optional term tokens to a sub-interval [rangeStart, rangeEnd)
+ * relative to the sentence's plainText, preserving markup, marker, and term underline states.
  * @param {Array<{type: string, value: string}>} tokens
  * @param {Array<{start: number, end: number}>} markers
  * @param {number} rangeStart
  * @param {number} rangeEnd
- * @returns {Array<{type: string, value: string, marked: boolean}>}
+ * @param {Array<{start:number,end:number,status?:'matched'|'deprecated',title?:string}>} [terms]
+ * @returns {Array<{type: string, value: string, marked: boolean, termState: 'none'|'matched'|'deprecated', termTitle: string}>}
  */
-export function sliceTokensByRange(tokens, markers, rangeStart, rangeEnd) {
+export function sliceTokensByRange(tokens, markers, rangeStart, rangeEnd, terms = []) {
   if (!Array.isArray(tokens) || tokens.length === 0) return [];
   const rs = Math.max(0, Math.floor(Number(rangeStart) || 0));
   const re = Math.max(rs, Math.floor(Number(rangeEnd) || 0));
   if (re <= rs) return [];
 
-  const markedTokens = splitTokensByMarkers(tokens, markers);
+  const highlightedTokens = splitTokensByHighlights(tokens, { markers, terms });
   const out = [];
   let cursor = 0;
 
-  for (const seg of markedTokens) {
+  for (const seg of highlightedTokens) {
     const val = seg.value || '';
     const segStart = cursor;
     const segEnd = cursor + val.length;
@@ -324,6 +369,8 @@ export function sliceTokensByRange(tokens, markers, rangeStart, rangeEnd) {
         type: seg.type,
         value: val.slice(a - segStart, b - segStart),
         marked: Boolean(seg.marked),
+        termState: seg.termState || 'none',
+        termTitle: seg.termTitle || '',
       });
     }
   }

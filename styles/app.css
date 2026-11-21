@@ -34,6 +34,9 @@
   --clause-pending-border: #0284c7;
   --clause-checked-bg: #dcfce7;
   --clause-checked-border: #16a34a;
+  --tm-underline: #0284c7;
+  --tm-deprecated-underline: #d97706;
+  --tm-typo-underline: #dc2626;
   --focus-ring: #2563eb;
   --font-sans: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Cascadia Mono", "Consolas", "SFMono-Regular", ui-monospace, monospace;
@@ -79,6 +82,9 @@ html.dark {
   --clause-pending-border: #38bdf8;
   --clause-checked-bg: #064e3b;
   --clause-checked-border: #4ade80;
+  --tm-underline: #38bdf8;
+  --tm-deprecated-underline: #fbbf24;
+  --tm-typo-underline: #f87171;
   --focus-ring: #60a5fa;
 }
 
@@ -823,6 +829,39 @@ mark.sentence-marker {
   border-bottom: 2px solid var(--clause-checked-border);
 }
 
+.tm-term-match {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--tm-underline);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+  cursor: help;
+}
+
+.tm-term-match.is-deprecated {
+  text-decoration-style: wavy;
+  text-decoration-color: var(--tm-deprecated-underline);
+}
+
+.tm-term-match.is-typo {
+  text-decoration-style: wavy;
+  text-decoration-color: var(--tm-typo-underline);
+  text-decoration-thickness: 1.75px;
+}
+
+mark.sentence-marker .tm-term-match {
+  text-decoration-color: var(--tm-underline);
+}
+
+mark.sentence-marker .tm-term-match.is-deprecated {
+  text-decoration-color: var(--tm-deprecated-underline);
+}
+
+mark.sentence-marker .tm-term-match.is-typo {
+  text-decoration-color: var(--tm-typo-underline);
+}
+
 .sentence-edit-textarea {
   width: 100%;
   min-height: 76px;
@@ -1210,12 +1249,18 @@ mark.sentence-marker {
   font-weight: 600;
 }
 
+.glossary-typo-line {
+  flex: 1;
+  min-width: 0;
+  color: var(--status-danger-fg);
+  font-weight: 600;
+}
+
 .glossary-ok-line {
   color: var(--status-verified-fg);
 }
 
-.hints-strip,
-.tm-strip {
+.hints-strip {
   padding: 7px 18px;
   background-color: var(--bg-canvas);
   border-top: 1px solid var(--border-hairline);
@@ -1253,14 +1298,6 @@ mark.sentence-marker {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-}
-
-.tm-warning-line {
-  color: var(--status-warning-fg);
-}
-
-.tm-match-line {
-  color: var(--text-secondary);
 }
 
 /* Right-click Context Menu & Inline Quick Register */

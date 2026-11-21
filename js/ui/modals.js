@@ -462,7 +462,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
                       jaNormOptions: store.state.jaNormOptions,
                     },
                     store.state.glossary,
-                    store.state.tmRecords,
+                    [],
                   ),
                 );
               },
@@ -601,7 +601,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       ],
       [
         '本文ドラッグ＆右クリック',
-        '英文または和文をドラッグして範囲選択し、右クリックすると、選択範囲へのマーカ付与／解除、「文節対比」ペアの作成・セット、「訳漏れなし（一時記録）」の切替、翻訳メモリ (TM) や用語集への即登録ができます。',
+        '英文または和文をドラッグして範囲選択し、右クリックすると、選択範囲へのマーカ付与／解除、「文節対比」ペアの作成・セット、「訳漏れなし（一時記録）」の切替、翻訳メモリ・用語集への単語・語句登録ができます。',
       ],
     ];
 
@@ -672,14 +672,21 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
 
   function renderGlossaryModal() {
     const activeTab = store.state.glossaryTab || 'list';
+    const activeProj = store.getActiveProject();
     let editingId = null;
 
     const tabBar = el('div', { className: 'segmented-control', role: 'tablist' }, [
       el('button', {
         type: 'button',
         className: `segmented-btn${activeTab === 'list' ? ' is-active' : ''}`,
-        textContent: `用語一覧・登録 (${store.state.glossary.length})`,
+        textContent: `登録一覧・追加 (${store.state.glossary.length})`,
         onClick: () => store.openModal('glossary', 'list'),
+      }),
+      el('button', {
+        type: 'button',
+        className: `segmented-btn${activeTab === 'candidates' ? ' is-active' : ''}`,
+        textContent: '用語候補抽出（共起分析）',
+        onClick: () => store.openModal('glossary', 'candidates'),
       }),
       el('button', {
         type: 'button',
@@ -690,7 +697,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       el('button', {
         type: 'button',
         className: `segmented-btn${activeTab === 'csv' ? ' is-active' : ''}`,
-        textContent: 'CSV / TSV 入出力',
+        textContent: 'CSV / TSV / TMX 入出力',
         onClick: () => store.openModal('glossary', 'csv'),
       }),
     ]);
@@ -724,7 +731,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         placeholder: '備考・使い分けメモ...',
       });
       const caseCheck = el('input', { type: 'checkbox' });
-      const saveBtnLabel = el('span', { textContent: '用語を登録' });
+      const saveBtnLabel = el('span', { textContent: 'TM・用語集に登録' });
 
       const splitMulti = (v) =>
         String(v || '')
@@ -740,7 +747,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         jaDepInput.value = '';
         notesInput.value = '';
         caseCheck.checked = false;
-        saveBtnLabel.textContent = '用語を登録';
+        saveBtnLabel.textContent = 'TM・用語集に登録';
       };
 
       const normWidthCheck = el('input', {
@@ -758,10 +765,23 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         checked: store.state.jaNormOptions.normalizeOkurigana,
         onChange: (e) => store.setJaNormOptions({ normalizeOkurigana: e.target.checked }),
       });
+      const fuzzyTypoEnabled = store.state.jaNormOptions.fuzzyTypoCheck !== false;
+      const fuzzyTypoCheck = el('input', {
+        type: 'checkbox',
+        checked: fuzzyTypoEnabled,
+        onChange: (e) => store.setJaNormOptions({ fuzzyTypoCheck: e.target.checked }),
+      });
+      const fuzzyMinLen3Check = el('input', {
+        type: 'checkbox',
+        checked: Number(store.state.jaNormOptions.fuzzyMinLength) === 3,
+        disabled: !fuzzyTypoEnabled,
+        onChange: (e) =>
+          store.setJaNormOptions({ fuzzyMinLength: e.target.checked ? 3 : 4 }),
+      });
 
       bodyContent.appendChild(
         el('div', { className: 'form-field' }, [
-          el('span', { className: 'form-label', textContent: '日本語照合時の表記ゆれ吸収オプション' }),
+          el('span', { className: 'form-label', textContent: '日本語照合・破線ハイライト・誤記チェック設定' }),
           el('div', { className: 'checkbox-row' }, [
             el('label', { className: 'checkbox-label' }, [
               normWidthCheck,
@@ -776,15 +796,42 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
               document.createTextNode('送り仮名ゆれを吸収（引き継ぎ/引継ぎ等）'),
             ]),
           ]),
+          el('div', { className: 'checkbox-row' }, [
+            el('label', { className: 'checkbox-label' }, [
+              fuzzyTypoCheck,
+              document.createTextNode('誤記・脱字・衍字チェック（1〜2文字差異を波線警告）'),
+            ]),
+            el('label', { className: 'checkbox-label' }, [
+              fuzzyMinLen3Check,
+              document.createTextNode('3文字の短い用語も対象にする（標準は4文字以上）'),
+            ]),
+          ]),
         ]),
       );
 
+      if (store.state.tmRecords.length > 0) {
+        bodyContent.appendChild(
+          el('div', { className: 'toolbar-group' }, [
+            el('span', {
+              className: 'meta-sep',
+              textContent: `旧仕様の文単位TM記録が ${store.state.tmRecords.length} 件残っています（現在は単語・語句単位で運用しています）`,
+            }),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-xs btn-danger',
+              textContent: '旧文単位TMを削除',
+              onClick: () => store.clearTm(),
+            }),
+          ]),
+        );
+      }
+
       bodyContent.appendChild(
         el('div', { className: 'form-field' }, [
-          el('span', { className: 'form-label', textContent: '用語の新規登録・編集' }),
+          el('span', { className: 'form-label', textContent: '単語・語句の新規登録・編集（登録語句は本文の英語・対応日本語に破線下線で表示されます）' }),
           el('div', { className: 'glossary-form-grid' }, [
             el('div', { className: 'form-field' }, [
-              el('label', { className: 'form-label', textContent: '英語見出し語 *' }),
+              el('label', { className: 'form-label', textContent: '英語語句 *' }),
               enInput,
             ]),
             el('div', { className: 'form-field' }, [
@@ -792,7 +839,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
               variantsInput,
             ]),
             el('div', { className: 'form-field' }, [
-              el('label', { className: 'form-label', textContent: '許容訳語（日本語）' }),
+              el('label', { className: 'form-label', textContent: '対応訳語・許容訳語（日本語）' }),
               jaAccInput,
             ]),
             el('div', { className: 'form-field' }, [
@@ -842,7 +889,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
             el('button', {
               type: 'button',
               className: 'btn btn-sm',
-              textContent: 'サンプル用語を追加',
+              textContent: 'サンプル語句を追加',
               onClick: () => store.seedSampleGlossary(),
             }),
             store.state.glossary.length > 0
@@ -858,21 +905,49 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       );
 
       const listContainer = el('div', { className: 'preview-warnings-list' });
-      if (store.state.glossary.length === 0) {
-        listContainer.appendChild(
-          el('div', { textContent: '登録された用語はありません。上のフォームまたはCSVから追加できます。' }),
-        );
-      } else {
+      const filterInput = el('input', {
+        type: 'search',
+        className: 'text-input',
+        placeholder: '登録語句を検索（英語・日本語・備考）...',
+        'aria-label': '登録語句検索',
+        onInput: () => renderEntriesTable(),
+      });
+
+      function renderEntriesTable() {
+        listContainer.textContent = '';
+        const q = filterInput.value.trim().toLowerCase();
+        const filtered = store.state.glossary.filter((entry) => {
+          if (!q) return true;
+          return (
+            (entry.enHeadword || '').toLowerCase().includes(q) ||
+            (entry.enVariants || []).some((v) => v.toLowerCase().includes(q)) ||
+            (entry.jaAccepted || []).some((j) => j.toLowerCase().includes(q)) ||
+            (entry.jaDeprecated || []).some((j) => j.toLowerCase().includes(q)) ||
+            (entry.notes || '').toLowerCase().includes(q)
+          );
+        });
+
+        if (filtered.length === 0) {
+          listContainer.appendChild(
+            el('div', {
+              textContent:
+                store.state.glossary.length === 0
+                  ? '登録された語句はありません。上のフォーム・CSV・本文の右クリックから追加できます。'
+                  : '検索条件に一致する語句がありません。',
+            }),
+          );
+          return;
+        }
         const table = el('table', { className: 'shortcut-table' });
         table.appendChild(
           el('tr', {}, [
-            el('th', { textContent: '英語見出し語' }),
-            el('th', { textContent: '許容訳語' }),
+            el('th', { textContent: '英語語句' }),
+            el('th', { textContent: '対応訳語（許容）' }),
             el('th', { textContent: '非推奨訳語' }),
             el('th', { textContent: '備考 / 操作' }),
           ]),
         );
-        for (const entry of store.state.glossary) {
+        for (const entry of filtered) {
           table.appendChild(
             el('tr', {}, [
               el('td', {}, [
@@ -923,312 +998,11 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         }
         listContainer.appendChild(table);
       }
-      bodyContent.appendChild(listContainer);
-    } else if (activeTab === 'lookup') {
-      const activeProj = store.getActiveProject();
-      const lookupResultsBox = el('div', { className: 'preview-warnings-list' });
-      const lookupInput = el('input', {
-        type: 'search',
-        className: 'text-input',
-        placeholder: '日本語語句を入力（例: トリアージ、引継ぎ、アドバイザリー）...',
-        'aria-label': '日英逆引き検索',
-        onInput: () => runLookup(),
-      });
 
-      function runLookup() {
-        lookupResultsBox.textContent = '';
-        if (!activeProj) {
-          lookupResultsBox.appendChild(
-            el('div', { textContent: '開いているドキュメントがありません。' }),
-          );
-          return;
-        }
-        const q = lookupInput.value.trim();
-        if (!q) {
-          lookupResultsBox.appendChild(
-            el('div', {
-              textContent:
-                '日本語語句を入力すると、現在のドキュメント内で該当語句を含む箇所と対応する英語文を一覧表示します（表記ゆれ吸収オプションも適用されます）。',
-            }),
-          );
-          return;
-        }
-        const hits = reverseLookupJapanese(
-          activeProj.blocks,
-          q,
-          store.state.jaNormOptions,
-          store.state.glossary,
-        );
-        lookupResultsBox.appendChild(
-          el('div', {
-            className: 'form-label',
-            textContent: `検索結果: ${hits.length}件`,
-          }),
-        );
-        for (const hit of hits) {
-          lookupResultsBox.appendChild(
-            el('div', { className: 'block-section' }, [
-              el('div', { className: 'block-header' }, [
-                el('span', {
-                  className: 'tabular-nums',
-                  textContent: `ブロック #${String(hit.blockIndex + 1).padStart(2, '0')}`,
-                }),
-                hit.matchedGlossary.length > 0
-                  ? el('span', {
-                      className: 'meta-sep',
-                      textContent: `登録見出し語: ${hit.matchedGlossary.join(', ')}`,
-                    })
-                  : null,
-                el('button', {
-                  type: 'button',
-                  className: 'btn btn-xs btn-primary',
-                  textContent: '該当箇所へ移動',
-                  onClick: () => onJumpToGroup && onJumpToGroup(hit.blockId, hit.groupId),
-                }),
-              ]),
-              el('div', { className: 'ja-block-editor' }, [
-                el('div', { textContent: `JA: ${hit.jaText}` }),
-                el('div', { className: 'meta-sep', textContent: `EN: ${hit.enText || '(対応なし)'}` }),
-              ]),
-            ]),
-          );
-        }
-      }
-
-      runLookup();
-      bodyContent.appendChild(
-        el('div', { className: 'form-field' }, [
-          el('label', { className: 'form-label', textContent: '日本語 → 英語 逆引き検索' }),
-          lookupInput,
-        ]),
-      );
-      bodyContent.appendChild(lookupResultsBox);
-    } else if (activeTab === 'csv') {
-      const pasteArea = el('textarea', {
-        className: 'source-textarea',
-        placeholder:
-          'enHeadword,jaAccepted,jaDeprecated,enVariants,caseSensitive,notes\ntriage,トリアージ,選別,triaged | triaging,false,カタカナ統一',
-      });
-      const replaceCheck = el('input', { type: 'checkbox' });
-      const fileInput = el('input', {
-        type: 'file',
-        accept: '.csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain',
-        onChange: async (e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          try {
-            pasteArea.value = await readFileAsUtf8(file);
-          } catch (err) {
-            store.showToast(err.message, true);
-          }
-        },
-      });
-
-      bodyContent.appendChild(
-        el('div', { className: 'form-field' }, [
-          el('span', { className: 'form-label', textContent: 'エクスポート（UTF-8 CSV / TSV）' }),
-          el('div', { className: 'toolbar-group' }, [
-            el('button', {
-              type: 'button',
-              className: 'btn btn-primary btn-sm',
-              disabled: store.state.glossary.length === 0,
-              textContent: 'CSVダウンロード',
-              onClick: () =>
-                triggerTextDownload(
-                  'glossary.csv',
-                  serializeGlossaryDelimited(store.state.glossary, ','),
-                  'text/csv;charset=utf-8',
-                ),
-            }),
-            el('button', {
-              type: 'button',
-              className: 'btn btn-sm',
-              disabled: store.state.glossary.length === 0,
-              textContent: 'TSVダウンロード',
-              onClick: () =>
-                triggerTextDownload(
-                  'glossary.tsv',
-                  serializeGlossaryDelimited(store.state.glossary, '\t'),
-                  'text/tab-separated-values;charset=utf-8',
-                ),
-            }),
-          ]),
-        ]),
-      );
-
-      bodyContent.appendChild(
-        el('div', { className: 'form-field' }, [
-          el('span', { className: 'form-label', textContent: 'CSV / TSV インポート（区切り自動判定）' }),
-          fileInput,
-          pasteArea,
-          el('label', { className: 'checkbox-label' }, [
-            replaceCheck,
-            document.createTextNode('既存の用語集を置き換える（未チェック時は追加）'),
-          ]),
-          el('div', { className: 'toolbar-group' }, [
-            el('button', {
-              type: 'button',
-              className: 'btn btn-primary btn-sm',
-              textContent: 'CSV / TSVを取り込む',
-              onClick: async () => {
-                const entries = parseGlossaryDelimited(pasteArea.value, 'auto');
-                if (entries.length === 0) {
-                  store.showToast('取り込める用語行が見つかりませんでした', true);
-                  return;
-                }
-                await store.importGlossaryList(entries, replaceCheck.checked);
-              },
-            }),
-          ]),
-        ]),
-      );
-    }
-
-    return el('div', { className: 'modal-dialog', role: 'dialog', 'aria-modal': 'true' }, [
-      el('div', { className: 'modal-header' }, [
-        el('h2', { textContent: '用語集・統一チェック・日→英 逆引き' }),
-        el('button', {
-          type: 'button',
-          className: 'btn btn-xs',
-          textContent: '閉じる',
-          onClick: () => store.closeModal(),
-        }),
-      ]),
-      bodyContent,
-      el('div', { className: 'modal-footer' }, [
-        el('button', {
-          type: 'button',
-          className: 'btn',
-          textContent: '閉じる',
-          onClick: () => store.closeModal(),
-        }),
-      ]),
-    ]);
-  }
-
-  function renderTmModal() {
-    const activeTab = store.state.tmModalTab || 'tm';
-    const activeProj = store.getActiveProject();
-
-    const tabBar = el('div', { className: 'segmented-control', role: 'tablist' }, [
-      el('button', {
-        type: 'button',
-        className: `segmented-btn${activeTab === 'tm' ? ' is-active' : ''}`,
-        textContent: `翻訳メモリ (${store.state.tmRecords.length})`,
-        onClick: () => store.openModal('tm', 'tm'),
-      }),
-      el('button', {
-        type: 'button',
-        className: `segmented-btn${activeTab === 'candidates' ? ' is-active' : ''}`,
-        textContent: '用語候補抽出（共起分析）',
-        onClick: () => store.openModal('tm', 'candidates'),
-      }),
-    ]);
-
-    const bodyContent = el('div', { className: 'modal-body' }, [tabBar]);
-
-    if (activeTab === 'tm') {
-      const filterInput = el('input', {
-        type: 'search',
-        className: 'text-input',
-        placeholder: '翻訳メモリ内を検索（英語・日本語）...',
-        'aria-label': '翻訳メモリ検索',
-        onInput: () => renderTmList(),
-      });
-      const listBox = el('div', { className: 'preview-warnings-list' });
-
-      function renderTmList() {
-        listBox.textContent = '';
-        const q = filterInput.value.trim().toLowerCase();
-        const filtered = store.state.tmRecords.filter(
-          (r) =>
-            !q ||
-            (r.enPlain || '').toLowerCase().includes(q) ||
-            (r.jaPlain || '').toLowerCase().includes(q),
-        );
-        if (filtered.length === 0) {
-          listBox.appendChild(
-            el('div', {
-              textContent:
-                store.state.tmRecords.length === 0
-                  ? '翻訳メモリはまだ空です。文グループを「確認済」にするか、上の「確認済ペアを一括登録」を押すと自動蓄積されます。'
-                  : '検索条件に一致する記録がありません。',
-            }),
-          );
-          return;
-        }
-        const table = el('table', { className: 'shortcut-table' });
-        table.appendChild(
-          el('tr', {}, [
-            el('th', { textContent: '英語原文' }),
-            el('th', { textContent: '日本語訳' }),
-            el('th', { textContent: '出典 / 操作' }),
-          ]),
-        );
-        for (const rec of filtered) {
-          table.appendChild(
-            el('tr', {}, [
-              el('td', { textContent: rec.enPlain }),
-              el('td', { textContent: rec.jaPlain }),
-              el('td', {}, [
-                rec.sourceDocTitle
-                  ? el('div', { className: 'meta-sep', textContent: rec.sourceDocTitle })
-                  : null,
-                el('button', {
-                  type: 'button',
-                  className: 'btn btn-xs btn-danger',
-                  textContent: '削除',
-                  onClick: () => store.removeTmRecord(rec.id),
-                }),
-              ]),
-            ]),
-          );
-        }
-        listBox.appendChild(table);
-      }
-
-      renderTmList();
-
-      bodyContent.appendChild(
-        el('div', { className: 'form-field' }, [
-          el('span', {
-            className: 'form-label',
-            textContent: '確認済ペアの蓄積・TMXエクスポート（完全ブラウザ内処理）',
-          }),
-          el('div', { className: 'toolbar-group' }, [
-            el('button', {
-              type: 'button',
-              className: 'btn btn-primary btn-sm',
-              disabled: !activeProj,
-              textContent: '現在文書の確認済ペアを一括登録',
-              onClick: () => store.harvestVerifiedToTm(),
-            }),
-            el('button', {
-              type: 'button',
-              className: 'btn btn-sm',
-              disabled: store.state.tmRecords.length === 0,
-              textContent: 'TMX 1.4 ダウンロード',
-              onClick: () =>
-                triggerTextDownload(
-                  `translation-memory-${new Date().toISOString().slice(0, 10)}.tmx`,
-                  exportTmAsTmx(store.state.tmRecords),
-                  'application/xml;charset=utf-8',
-                ),
-            }),
-            store.state.tmRecords.length > 0
-              ? el('button', {
-                  type: 'button',
-                  className: 'btn btn-sm btn-danger',
-                  textContent: 'TM全削除',
-                  onClick: () => store.clearTm(),
-                })
-              : null,
-          ]),
-        ]),
-      );
+      renderEntriesTable();
       bodyContent.appendChild(filterInput);
-      bodyContent.appendChild(listBox);
-    } else {
+      bodyContent.appendChild(listContainer);
+    } else if (activeTab === 'candidates') {
       let minFreq = 2;
       const resultsBox = el('div', { className: 'preview-warnings-list' });
       const freqControl = el('div', { className: 'segmented-control' });
@@ -1284,7 +1058,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
             type: 'text',
             className: 'text-input',
             value: defaultJa,
-            placeholder: '許容訳語を入力...',
+            placeholder: '対応訳語を入力...',
             'aria-label': `${cand.enTerm} の訳語候補`,
           });
           const jaBadges = cand.jaCandidates
@@ -1308,11 +1082,11 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
               ]),
               el('td', {}, [
                 cand.alreadyInGlossary
-                  ? el('span', { className: 'status-verified', textContent: '✓ 用語集に登録済' })
+                  ? el('span', { className: 'status-verified', textContent: '✓ 登録済' })
                   : el('button', {
                       type: 'button',
                       className: 'btn btn-xs btn-primary',
-                      textContent: '用語集へ登録',
+                      textContent: 'TM・用語集に登録',
                       onClick: async () => {
                         const chosenJa = jaSelectOrInput.value.trim();
                         await store.saveGlossaryItem({
@@ -1345,11 +1119,180 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         ]),
       );
       bodyContent.appendChild(resultsBox);
+    } else if (activeTab === 'lookup') {
+      const lookupResultsBox = el('div', { className: 'preview-warnings-list' });
+      const lookupInput = el('input', {
+        type: 'search',
+        className: 'text-input',
+        placeholder: '日本語語句を入力（例: トリアージ、引継ぎ、アドバイザリー）...',
+        'aria-label': '日英逆引き検索',
+        onInput: () => runLookup(),
+      });
+
+      function runLookup() {
+        lookupResultsBox.textContent = '';
+        if (!activeProj) {
+          lookupResultsBox.appendChild(
+            el('div', { textContent: '開いているドキュメントがありません。' }),
+          );
+          return;
+        }
+        const q = lookupInput.value.trim();
+        if (!q) {
+          lookupResultsBox.appendChild(
+            el('div', {
+              textContent:
+                '日本語語句を入力すると、現在のドキュメント内で該当語句を含む箇所と対応する英語文を一覧表示します（表記ゆれ吸収オプションも適用されます）。',
+            }),
+          );
+          return;
+        }
+        const hits = reverseLookupJapanese(
+          activeProj.blocks,
+          q,
+          store.state.jaNormOptions,
+          store.state.glossary,
+        );
+        lookupResultsBox.appendChild(
+          el('div', {
+            className: 'form-label',
+            textContent: `検索結果: ${hits.length}件`,
+          }),
+        );
+        for (const hit of hits) {
+          lookupResultsBox.appendChild(
+            el('div', { className: 'block-section' }, [
+              el('div', { className: 'block-header' }, [
+                el('span', {
+                  className: 'tabular-nums',
+                  textContent: `ブロック #${String(hit.blockIndex + 1).padStart(2, '0')}`,
+                }),
+                hit.matchedGlossary.length > 0
+                  ? el('span', {
+                      className: 'meta-sep',
+                      textContent: `登録語句: ${hit.matchedGlossary.join(', ')}`,
+                    })
+                  : null,
+                el('button', {
+                  type: 'button',
+                  className: 'btn btn-xs btn-primary',
+                  textContent: '該当箇所へ移動',
+                  onClick: () => onJumpToGroup && onJumpToGroup(hit.blockId, hit.groupId),
+                }),
+              ]),
+              el('div', { className: 'ja-block-editor' }, [
+                el('div', { textContent: `JA: ${hit.jaText}` }),
+                el('div', { className: 'meta-sep', textContent: `EN: ${hit.enText || '(対応なし)'}` }),
+              ]),
+            ]),
+          );
+        }
+      }
+
+      runLookup();
+      bodyContent.appendChild(
+        el('div', { className: 'form-field' }, [
+          el('label', { className: 'form-label', textContent: '日本語 → 英語 逆引き検索' }),
+          lookupInput,
+        ]),
+      );
+      bodyContent.appendChild(lookupResultsBox);
+    } else if (activeTab === 'csv') {
+      const pasteArea = el('textarea', {
+        className: 'source-textarea',
+        placeholder:
+          'enHeadword,jaAccepted,jaDeprecated,enVariants,caseSensitive,notes\ntriage,トリアージ,選別,triaged | triaging,false,カタカナ統一',
+      });
+      const replaceCheck = el('input', { type: 'checkbox' });
+      const fileInput = el('input', {
+        type: 'file',
+        accept: '.csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain',
+        onChange: async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          try {
+            pasteArea.value = await readFileAsUtf8(file);
+          } catch (err) {
+            store.showToast(err.message, true);
+          }
+        },
+      });
+
+      bodyContent.appendChild(
+        el('div', { className: 'form-field' }, [
+          el('span', { className: 'form-label', textContent: 'エクスポート（UTF-8 CSV / TSV / TMX 1.4）' }),
+          el('div', { className: 'toolbar-group' }, [
+            el('button', {
+              type: 'button',
+              className: 'btn btn-primary btn-sm',
+              disabled: store.state.glossary.length === 0,
+              textContent: 'CSVダウンロード',
+              onClick: () =>
+                triggerTextDownload(
+                  'glossary-tm.csv',
+                  serializeGlossaryDelimited(store.state.glossary, ','),
+                  'text/csv;charset=utf-8',
+                ),
+            }),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-sm',
+              disabled: store.state.glossary.length === 0,
+              textContent: 'TSVダウンロード',
+              onClick: () =>
+                triggerTextDownload(
+                  'glossary-tm.tsv',
+                  serializeGlossaryDelimited(store.state.glossary, '\t'),
+                  'text/tab-separated-values;charset=utf-8',
+                ),
+            }),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-sm',
+              disabled: store.state.glossary.length === 0,
+              textContent: 'TMX 1.4 ダウンロード',
+              onClick: () =>
+                triggerTextDownload(
+                  `translation-memory-${new Date().toISOString().slice(0, 10)}.tmx`,
+                  exportTmAsTmx(store.state.glossary),
+                  'application/xml;charset=utf-8',
+                ),
+            }),
+          ]),
+        ]),
+      );
+
+      bodyContent.appendChild(
+        el('div', { className: 'form-field' }, [
+          el('span', { className: 'form-label', textContent: 'CSV / TSV インポート（区切り自動判定）' }),
+          fileInput,
+          pasteArea,
+          el('label', { className: 'checkbox-label' }, [
+            replaceCheck,
+            document.createTextNode('既存の登録を置き換える（未チェック時は追加）'),
+          ]),
+          el('div', { className: 'toolbar-group' }, [
+            el('button', {
+              type: 'button',
+              className: 'btn btn-primary btn-sm',
+              textContent: 'CSV / TSVを取り込む',
+              onClick: async () => {
+                const entries = parseGlossaryDelimited(pasteArea.value, 'auto');
+                if (entries.length === 0) {
+                  store.showToast('取り込める語句行が見つかりませんでした', true);
+                  return;
+                }
+                await store.importGlossaryList(entries, replaceCheck.checked);
+              },
+            }),
+          ]),
+        ]),
+      );
     }
 
     return el('div', { className: 'modal-dialog', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { className: 'modal-header' }, [
-        el('h2', { textContent: '翻訳メモリ (TM) ・ 用語候補抽出' }),
+        el('h2', { textContent: '翻訳メモリ (TM) ・用語集・統一チェック' }),
         el('button', {
           type: 'button',
           className: 'btn btn-xs',
@@ -1388,10 +1331,8 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       backdrop.appendChild(renderSettingsModal());
     } else if (state.activeModal === 'shortcuts') {
       backdrop.appendChild(renderShortcutsModal());
-    } else if (state.activeModal === 'glossary') {
+    } else if (state.activeModal === 'glossary' || state.activeModal === 'tm') {
       backdrop.appendChild(renderGlossaryModal());
-    } else if (state.activeModal === 'tm') {
-      backdrop.appendChild(renderTmModal());
     }
 
     modalRoot.appendChild(backdrop);

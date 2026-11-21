@@ -478,7 +478,10 @@ export function computeProjectStats(
       if (glossaryEntries && glossaryEntries.length > 0) {
         const enPlain = (group.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ');
         const jaPlain = (group.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
-        const gCheck = checkGroupGlossary(enPlain, jaPlain, glossaryEntries, jaNormOptions);
+        const gCheck = checkGroupGlossary(enPlain, jaPlain, glossaryEntries, jaNormOptions, {
+          groupId: group.id,
+          dismissedHints,
+        });
         if (gCheck.hasIssues) {
           glossaryWarningGroups += 1;
         }

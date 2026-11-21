@@ -148,19 +148,33 @@ function escapeXml(str) {
 }
 
 /**
- * Exports Translation Memory records as valid TMX 1.4b XML.
+ * Exports Translation Memory / unified Glossary records as valid TMX 1.4b XML.
  */
 export function exportTmAsTmx(tmRecords) {
   const header = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<tmx version="1.4">',
-    '  <header creationtool="BitextFolio" creationtoolversion="1.0" datatype="PlainText" segtype="sentence" adminlang="en" srclang="en" o-tmf="plain"/>',
+    '  <header creationtool="BitextFolio" creationtoolversion="1.0" datatype="PlainText" segtype="phrase" adminlang="en" srclang="en" o-tmf="plain"/>',
     '  <body>',
   ];
 
   const body = [];
   for (const rec of tmRecords || []) {
-    if (!rec?.enPlain || !rec?.jaPlain) continue;
+    if (!rec) continue;
+    if (rec.enHeadword) {
+      const jaList = (rec.jaAccepted || []).filter(Boolean);
+      for (const jaText of jaList) {
+        body.push('    <tu>');
+        if (rec.notes) {
+          body.push(`      <prop type="x-note">${escapeXml(rec.notes)}</prop>`);
+        }
+        body.push(`      <tuv xml:lang="en"><seg>${escapeXml(rec.enHeadword)}</seg></tuv>`);
+        body.push(`      <tuv xml:lang="ja"><seg>${escapeXml(jaText)}</seg></tuv>`);
+        body.push('    </tu>');
+      }
+      continue;
+    }
+    if (!rec.enPlain || !rec.jaPlain) continue;
     body.push('    <tu>');
     if (rec.sourceDocTitle) {
       body.push(`      <prop type="x-document">${escapeXml(rec.sourceDocTitle)}</prop>`);

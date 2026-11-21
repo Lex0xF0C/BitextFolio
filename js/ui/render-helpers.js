@@ -59,20 +59,47 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 /**
- * Safely renders inline emphasis/code tokens, manual markers, and temporary clause highlights as DOM nodes.
+ * Safely renders inline emphasis/code tokens, manual markers, temporary clause highlights,
+ * and dashed underlines for registered TM/glossary terms.
  */
-export function renderRichSentenceFragment(rawText, markers = [], clauseHighlights = null) {
+export function renderRichSentenceFragment(
+  rawText,
+  markers = [],
+  clauseHighlights = null,
+  termSpans = [],
+) {
   const frag = document.createDocumentFragment();
   const tokens = tokenizeInlineMarkup(rawText);
   const segments = splitTokensByHighlights(tokens, {
     markers,
     pending: clauseHighlights?.pending || [],
     checked: clauseHighlights?.checked || [],
+    terms: termSpans,
   });
   for (const seg of segments) {
     let innerNode = seg.marked
       ? el('mark', { className: 'sentence-marker', textContent: seg.value })
       : document.createTextNode(seg.value);
+
+    if (seg.termState === 'deprecated') {
+      innerNode = el(
+        'span',
+        { className: 'tm-term-match is-deprecated', title: seg.termTitle || null },
+        [innerNode],
+      );
+    } else if (seg.termState === 'typo') {
+      innerNode = el(
+        'span',
+        { className: 'tm-term-match is-typo', title: seg.termTitle || null },
+        [innerNode],
+      );
+    } else if (seg.termState === 'matched') {
+      innerNode = el(
+        'span',
+        { className: 'tm-term-match', title: seg.termTitle || null },
+        [innerNode],
+      );
+    }
 
     if (seg.clauseState === 'checked') {
       innerNode = el('span', { className: 'clause-span is-checked' }, [innerNode]);
@@ -94,16 +121,42 @@ export function renderRichSentenceFragment(rawText, markers = [], clauseHighligh
 }
 
 /**
- * Safely renders a sentence slice [spanStart, spanEnd) with inline markup and sentence markers.
+ * Safely renders a sentence slice [spanStart, spanEnd) with inline markup, sentence markers, and term underlines.
  */
-export function renderClauseFragment(rawText, markers = [], spanStart = 0, spanEnd = 0) {
+export function renderClauseFragment(
+  rawText,
+  markers = [],
+  spanStart = 0,
+  spanEnd = 0,
+  termSpans = [],
+) {
   const frag = document.createDocumentFragment();
   const tokens = tokenizeInlineMarkup(rawText);
-  const segments = sliceTokensByRange(tokens, markers, spanStart, spanEnd);
+  const segments = sliceTokensByRange(tokens, markers, spanStart, spanEnd, termSpans);
   for (const seg of segments) {
-    const innerNode = seg.marked
+    let innerNode = seg.marked
       ? el('mark', { className: 'sentence-marker', textContent: seg.value })
       : document.createTextNode(seg.value);
+
+    if (seg.termState === 'deprecated') {
+      innerNode = el(
+        'span',
+        { className: 'tm-term-match is-deprecated', title: seg.termTitle || null },
+        [innerNode],
+      );
+    } else if (seg.termState === 'typo') {
+      innerNode = el(
+        'span',
+        { className: 'tm-term-match is-typo', title: seg.termTitle || null },
+        [innerNode],
+      );
+    } else if (seg.termState === 'matched') {
+      innerNode = el(
+        'span',
+        { className: 'tm-term-match', title: seg.termTitle || null },
+        [innerNode],
+      );
+    }
 
     if (seg.type === 'em') {
       frag.appendChild(el('em', {}, [innerNode]));
@@ -121,14 +174,22 @@ export function renderClauseFragment(rawText, markers = [], spanStart = 0, spanE
 import { checkGroupGlossary, DEFAULT_JA_NORM_OPTIONS } from '../core/glossary.js';
 import { detectGroupHints } from '../core/hints.js';
 
-export function blockHasGlossaryIssues(block, glossary = [], jaNormOptions = DEFAULT_JA_NORM_OPTIONS) {
+export function blockHasGlossaryIssues(
+  block,
+  glossary = [],
+  jaNormOptions = DEFAULT_JA_NORM_OPTIONS,
+  dismissedHints = {},
+) {
   if (!glossary || glossary.length === 0) return false;
   const enMap = new Map((block.enSentences || []).map((s) => [s.id, s]));
   const jaMap = new Map((block.jaSentences || []).map((s) => [s.id, s]));
   return (block.groups || []).some((g) => {
     const enPlain = (g.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ');
     const jaPlain = (g.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
-    return checkGroupGlossary(enPlain, jaPlain, glossary, jaNormOptions).hasIssues;
+    return checkGroupGlossary(enPlain, jaPlain, glossary, jaNormOptions, {
+      groupId: g.id,
+      dismissedHints,
+    }).hasIssues;
   });
 }
 
@@ -165,7 +226,7 @@ export function blockMatchesFilter(
       return blockHasMarkersOrTempNoOmission(block);
     }
     if (filterStatus === 'glossary_issues') {
-      return blockHasGlossaryIssues(block, glossary, jaNormOptions);
+      return blockHasGlossaryIssues(block, glossary, jaNormOptions, dismissedHints);
     }
     if (filterStatus === 'hint_issues') {
       return blockHasActiveHints(block, duplicateJaIndex, dismissedHints);
@@ -174,7 +235,7 @@ export function blockMatchesFilter(
       return (
         (block.warnings || []).length > 0 ||
         block.groups.some((g) => g.status === 'needs_review' || g.status === 'source_changed') ||
-        blockHasGlossaryIssues(block, glossary, jaNormOptions) ||
+        blockHasGlossaryIssues(block, glossary, jaNormOptions, dismissedHints) ||
         blockHasActiveHints(block, duplicateJaIndex, dismissedHints)
       );
     }

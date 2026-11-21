@@ -40,8 +40,13 @@ import {
   updateSentenceTextInBlock,
 } from '../js/core/document-builder.js';
 import {
+  buildGlossaryTypoHintId,
   checkGroupGlossary,
+  collectGroupHighlightSpans,
   findEnglishGlossaryMatches,
+  findEnglishGlossarySpans,
+  findJapaneseFuzzyTermSpans,
+  findJapaneseTermSpans,
   matchJapaneseTerm,
   parseGlossaryDelimited,
   reverseLookupJapanese,
@@ -559,10 +564,10 @@ test('Clause-level comparison pairs track waiting pair, coverage, highlights, ch
   const sliceTokens = tokenizeInlineMarkup('Verify *anomaly* handling daily.');
   const sliced = sliceTokensByRange(sliceTokens, [{ start: 7, end: 12 }], 5, 23);
   assert.deepEqual(sliced, [
-    { type: 'text', value: 'y ', marked: false },
-    { type: 'em', value: 'anoma', marked: true },
-    { type: 'em', value: 'ly', marked: false },
-    { type: 'text', value: ' handling', marked: false },
+    { type: 'text', value: 'y ', marked: false, termState: 'none', termTitle: '' },
+    { type: 'em', value: 'anoma', marked: true, termState: 'none', termTitle: '' },
+    { type: 'em', value: 'ly', marked: false, termState: 'none', termTitle: '' },
+    { type: 'text', value: ' handling', marked: false, termState: 'none', termTitle: '' },
   ]);
 });
 
@@ -664,6 +669,266 @@ test('Single numbered clauses split sentences automatically and splitInsideList 
   assert.equal(blk.jaSentences.length, 4);
   assert.equal(blk.groups.length, 4);
 });
+
+test('Unified TM/Glossary span highlighters resolve exact EN/JA offsets, overlaps, token slicing, and phrase TMX export', () => {
+  // 1. English inflections & variants return exact offsets
+  const enText = 'Teams triaged coordinated vulnerability disclosure advisories.';
+  const triageSpans = findEnglishGlossarySpans(enText, {
+    enHeadword: 'triage',
+    enVariants: [],
+    caseSensitive: false,
+  });
+  assert.deepEqual(triageSpans, [{ start: 6, end: 13, text: 'triaged' }]);
+
+  // 2. Japanese span mapper preserves exact source offsets across width, long vowel, and okurigana normalization
+  const jaText1 = '脆弱性アドバイザリーと引き継ぎ手順を確認する。';
+  const advSpans = findJapaneseTermSpans(jaText1, 'アドバイザリ');
+  assert.deepEqual(advSpans, [{ start: 3, end: 10, text: 'アドバイザリー' }]);
+  const handSpans = findJapaneseTermSpans(jaText1, '引継手順');
+  assert.deepEqual(handSpans, [{ start: 11, end: 17, text: '引き継ぎ手順' }]);
+
+  const jaText2 = 'ＮＩＳＴの引継を確認。';
+  const nistSpans = findJapaneseTermSpans(jaText2, 'NIST');
+  assert.deepEqual(nistSpans, [{ start: 0, end: 4, text: 'ＮＩＳＴ' }]);
+  const okuriSpans = findJapaneseTermSpans(jaText2, '引き継ぎ');
+  assert.deepEqual(okuriSpans, [{ start: 5, end: 7, text: '引継' }]);
+
+  // 3. collectGroupHighlightSpans underlines EN matches, corresponding JA matches, deprecated JA warnings, and resolves overlaps
+  const entries = [
+    {
+      id: 'g_cvd',
+      enHeadword: 'coordinated vulnerability disclosure',
+      enVariants: ['CVD'],
+      jaAccepted: ['協調的な脆弱性情報開示'],
+      jaDeprecated: [],
+      caseSensitive: false,
+      notes: '正式訳',
+    },
+    {
+      id: 'g_vuln',
+      enHeadword: 'vulnerability',
+      enVariants: [],
+      jaAccepted: ['脆弱性'],
+      jaDeprecated: [],
+      caseSensitive: false,
+      notes: '',
+    },
+    {
+      id: 'g_triage',
+      enHeadword: 'triage',
+      enVariants: [],
+      jaAccepted: ['トリアージ'],
+      jaDeprecated: ['選別'],
+      caseSensitive: false,
+      notes: '',
+    },
+    {
+      id: 'g_unused',
+      enHeadword: 'quarantine',
+      enVariants: [],
+      jaAccepted: ['隔離'],
+      jaDeprecated: [],
+      caseSensitive: false,
+      notes: '',
+    },
+  ];
+
+  // Note: "隔離" appears in JA even though "quarantine" does NOT appear in EN -> should NOT be underlined as matched
+  const blk = buildAlignmentBlock(
+    'We follow coordinated vulnerability disclosure rules.',
+    '協調的な脆弱性情報開示の方針に従い、隔離せず選別する。',
+    0,
+  );
+  const { enSpansBySentenceId, jaSpansBySentenceId } = collectGroupHighlightSpans(
+    blk.enSentences,
+    blk.jaSentences,
+    entries,
+  );
+  const enSpans = enSpansBySentenceId.get(blk.enSentences[0].id);
+  const jaSpans = jaSpansBySentenceId.get(blk.jaSentences[0].id);
+
+  // Longer "coordinated vulnerability disclosure" wins over nested "vulnerability"
+  assert.equal(enSpans.length, 1);
+  assert.equal(
+    blk.enSentences[0].plainText.slice(enSpans[0].start, enSpans[0].end),
+    'coordinated vulnerability disclosure',
+  );
+  assert.equal(enSpans[0].status, 'matched');
+
+  // Longer "協調的な脆弱性情報開示" wins over nested "脆弱性"; "選別" is deprecated; "隔離" is omitted (not matched on EN)
+  assert.equal(jaSpans.length, 2);
+  assert.equal(
+    blk.jaSentences[0].plainText.slice(jaSpans[0].start, jaSpans[0].end),
+    '協調的な脆弱性情報開示',
+  );
+  assert.equal(jaSpans[0].status, 'matched');
+  assert.equal(blk.jaSentences[0].plainText.slice(jaSpans[1].start, jaSpans[1].end), '選別');
+  assert.equal(jaSpans[1].status, 'deprecated');
+
+  // 4. splitTokensByHighlights & sliceTokensByRange preserve term underlines across inline markup
+  const tokens = tokenizeInlineMarkup('Verify *triage* status.');
+  const segs = splitTokensByHighlights(tokens, {
+    markers: [{ start: 0, end: 13 }],
+    terms: [{ start: 7, end: 13, status: 'matched', title: '登録済: triage ⇔ トリアージ' }],
+  });
+  const triageSeg = segs.find((s) => s.value === 'triage');
+  assert.ok(triageSeg);
+  assert.equal(triageSeg.type, 'em');
+  assert.equal(triageSeg.marked, true);
+  assert.equal(triageSeg.termState, 'matched');
+  assert.match(triageSeg.termTitle, /トリアージ/);
+
+  const sliced = sliceTokensByRange(
+    tokens,
+    [{ start: 0, end: 13 }],
+    4,
+    15,
+    [{ start: 7, end: 13, status: 'matched', title: '登録済: triage ⇔ トリアージ' }],
+  );
+  assert.equal(sliced.map((s) => s.value).join(''), 'fy triage s');
+  const slicedTerm = sliced.find((s) => s.value === 'triage');
+  assert.ok(slicedTerm);
+  assert.equal(slicedTerm.termState, 'matched');
+  assert.equal(slicedTerm.marked, true);
+
+  // 5. exportTmAsTmx exports unified phrase glossary entries cleanly
+  const tmx = exportTmAsTmx([
+    {
+      id: 'g1',
+      enHeadword: 'incident response & recovery',
+      jaAccepted: ['インシデント対応と復旧'],
+      notes: '統一表現',
+    },
+  ]);
+  assert.match(tmx, /segtype="phrase"/);
+  assert.match(tmx, /<tuv xml:lang="en"><seg>incident response &amp;amp; recovery<\/seg><\/tuv>|<tuv xml:lang="en"><seg>incident response &amp; recovery<\/seg><\/tuv>/);
+  assert.match(tmx, /<tuv xml:lang="ja"><seg>インシデント対応と復旧<\/seg><\/tuv>/);
+});
+
+test('Fuzzy Japanese typo detector catches 1-char substitutions, omissions, insertions, adjacent swaps, and respects boundary guards', () => {
+  // 1. 6-char word, 4th char substitution (セキュリティ -> セキュラティ)
+  const subHits = findJapaneseFuzzyTermSpans('セキュラティ対策を実施する。', 'セキュリティ');
+  assert.equal(subHits.length, 1);
+  assert.equal(subHits[0].text, 'セキュラティ');
+  assert.match(subHits[0].diffSummary, /誤記/);
+
+  // 2. 6-char word with 1 char missing (アドバイザリ -> アドバザリー) with long vowel offset preserved
+  const delHits = findJapaneseFuzzyTermSpans('脆弱性アドバザリーを公開する。', 'アドバイザリ');
+  assert.equal(delHits.length, 1);
+  assert.equal(delHits[0].text, 'アドバザリー');
+  assert.match(delHits[0].diffSummary, /欠落/);
+
+  // 3. 1 extra char insertion (セキュリティ -> セキュウリティ)
+  const insHits = findJapaneseFuzzyTermSpans('セキュウリティ要件を確認。', 'セキュリティ');
+  assert.equal(insHits.length, 1);
+  assert.equal(insHits[0].text, 'セキュウリティ');
+  assert.match(insHits[0].diffSummary, /余分/);
+
+  // 4. Adjacent swap / transposition (インシデント -> インデシント)
+  const swapHits = findJapaneseFuzzyTermSpans('インデシント対応を開始。', 'インシデント');
+  assert.equal(swapHits.length, 1);
+  assert.equal(swapHits[0].text, 'インデシント');
+  assert.match(swapHits[0].diffSummary, /入れ替え/);
+
+  // 5. Particle/punctuation boundary is trimmed cleanly (アドバイザを -> アドバイザ, not including を)
+  const particleHits = findJapaneseFuzzyTermSpans('最新のアドバイザを公開する。', 'アドバイザリ');
+  assert.equal(particleHits.length, 1);
+  assert.equal(particleHits[0].text, 'アドバイザ');
+
+  // 6. 9+ char phrase allows up to 2 edits (協調的な脆弱性情報開示 -> 協調的な脆性情報開始)
+  const longHits = findJapaneseFuzzyTermSpans(
+    '協調的な脆性情報開始の手順に従う。',
+    '協調的な脆弱性情報開示',
+  );
+  assert.equal(longHits.length, 1);
+  assert.equal(longHits[0].edits, 2);
+
+  // 7. Exact matches are never flagged as typos
+  assert.equal(findJapaneseFuzzyTermSpans('セキュリティアドバイザリーを公開する。', 'アドバイザリ').length, 0);
+});
+
+test('Fuzzy typo check honors ON/OFF toggle, 3-char minLength option, highlight spans, and dismissal state', () => {
+  const glossary = [
+    {
+      id: 'g_adv',
+      enHeadword: 'advisory',
+      enVariants: [],
+      jaAccepted: ['アドバイザリ'],
+      jaDeprecated: [],
+      caseSensitive: false,
+    },
+    {
+      id: 'g_vuln',
+      enHeadword: 'vulnerability',
+      enVariants: [],
+      jaAccepted: ['脆弱性'], // 3 chars
+      jaDeprecated: [],
+      caseSensitive: false,
+    },
+  ];
+
+  // Default: fuzzyTypoCheck = true, fuzzyMinLength = 4 -> catches アドバザリー (6 chars), ignores 脆弱生 (3 chars)
+  const resDefault = checkGroupGlossary(
+    'Publish the vulnerability advisory.',
+    '脆弱生のアドバザリーを公開する。',
+    glossary,
+  );
+  assert.equal(resDefault.fuzzyTypos.length, 1);
+  assert.equal(resDefault.fuzzyTypos[0].span.text, 'アドバザリー');
+  assert.equal(resDefault.missingAccepted.length, 1); // 脆弱性 falls back to missingAccepted when minLen=4
+
+  // Min length = 3 -> catches both
+  const resMin3 = checkGroupGlossary(
+    'Publish the vulnerability advisory.',
+    '脆弱生のアドバザリーを公開する。',
+    glossary,
+    { normalizeWidth: true, normalizeLongVowel: true, normalizeOkurigana: true, fuzzyTypoCheck: true, fuzzyMinLength: 3 },
+  );
+  assert.equal(resMin3.fuzzyTypos.length, 2);
+  assert.equal(resMin3.missingAccepted.length, 0);
+
+  // OFF toggle disables fuzzy detection completely
+  const resOff = checkGroupGlossary(
+    'Publish the vulnerability advisory.',
+    '脆弱生のアドバザリーを公開する。',
+    glossary,
+    { normalizeWidth: true, normalizeLongVowel: true, normalizeOkurigana: true, fuzzyTypoCheck: false, fuzzyMinLength: 4 },
+  );
+  assert.equal(resOff.fuzzyTypos.length, 0);
+  assert.equal(resOff.missingAccepted.length, 2);
+
+  // Highlight spans mark 'typo' and respect dismissedHints
+  const blk = buildAlignmentBlock('Read the advisory.', '最新のアドバザリーを読む。', 0);
+  const hintId = buildGlossaryTypoHintId(blk.groups[0].id, 'g_adv', 'アドバザリー', 'アドバイザリ');
+
+  const activeHighlights = collectGroupHighlightSpans(
+    blk.enSentences,
+    blk.jaSentences,
+    glossary,
+    undefined,
+    { groupId: blk.groups[0].id, dismissedHints: {} },
+  );
+  const jaActive = activeHighlights.jaSpansBySentenceId.get(blk.jaSentences[0].id);
+  assert.equal(jaActive.length, 1);
+  assert.equal(jaActive[0].status, 'typo');
+
+  const dismissedHighlights = collectGroupHighlightSpans(
+    blk.enSentences,
+    blk.jaSentences,
+    glossary,
+    undefined,
+    { groupId: blk.groups[0].id, dismissedHints: { [hintId]: true } },
+  );
+  assert.equal((dismissedHighlights.jaSpansBySentenceId.get(blk.jaSentences[0].id) || []).length, 0);
+
+  // Token splitter preserves 'typo' termState
+  const segs = splitTokensByHighlights(tokenizeInlineMarkup('最新のアドバザリーを読む。'), {
+    terms: jaActive,
+  });
+  assert.ok(segs.some((s) => s.value === 'アドバザリー' && s.termState === 'typo'));
+});
+
+
 
 
 
