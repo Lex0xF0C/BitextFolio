@@ -38,11 +38,11 @@
 
 Node.js やビルドツールは不要です。Windows 等でファイルをそのまま push するだけで公開できます。
 
-1. このリポジトリを GitHub 上に作成（またはフォーク）し、ファイル一式を `main` ブランチへ push します。
+1. GitHub 上にリポジトリ（例: `BitextFolio`）を作成（またはフォーク）し、ファイル一式を `main` ブランチへ push します。
 2. GitHub リポジトリページの **Settings** > **Pages** を開きます。
 3. **Build and deployment** の **Source** で **Deploy from a branch** を選択します。
 4. **Branch** に `main`（または公開ブランチ）、フォルダに **`/ (root)`** を指定して **Save** をクリックします。
-5. 公開 URL（`https://<ユーザー名>.github.io/bitext-folio/`）にアクセスすると即座に動作します。
+5. 公開 URL（`https://<ユーザー名>.github.io/BitextFolio/` ※リポジトリ名部分は大文字・小文字を含め実際のリポジトリ名に一致します）にアクセスすると即座に動作します。
 
 > **補足**: ルートの `.nojekyll` ファイルにより GitHub Pages 側の Jekyll 変換を無効化し、ES Modules をそのまま配信します。
 
