@@ -378,26 +378,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         el('button', {
           type: 'button',
           className: 'context-menu-item is-primary',
-          textContent: '文頭〜ここまでをマーカ（ここまで確認済）',
-          onClick: () => {
-            closeContextMenu();
-            clearBrowserSelection();
-            store.addSentenceMarker(
-              block.id,
-              lang,
-              sentenceObj.id,
-              0,
-              selRange.end,
-              '文頭〜選択位置までマーカを付けました',
-            );
-          },
-        }),
-      );
-      items.push(
-        el('button', {
-          type: 'button',
-          className: 'context-menu-item',
-          textContent: '選択範囲のみをマーカ（ハイライト）',
+          textContent: '選択範囲をマーカ（確認済の目印）',
           onClick: () => {
             closeContextMenu();
             clearBrowserSelection();
@@ -408,6 +389,25 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
               selRange.start,
               selRange.end,
               '選択範囲にマーカを付けました',
+            );
+          },
+        }),
+      );
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: '文頭〜選択末尾までをマーカ',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.addSentenceMarker(
+              block.id,
+              lang,
+              sentenceObj.id,
+              0,
+              selRange.end,
+              '文頭〜選択位置までマーカを付けました',
             );
           },
         }),
