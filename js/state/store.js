@@ -12,6 +12,14 @@ import {
 } from '../core/alignment.js';
 import { addMarkerRange, removeMarkerRange } from '../core/markers.js';
 import {
+  addClausePairInGroup,
+  attachSpanToClausePairInGroup,
+  clearClausePairsInGroup,
+  removeClausePairInGroup,
+  toggleClausePairCheckedInGroup,
+  updateClausePairNoteInGroup,
+} from '../core/clauses.js';
+import {
   buildAlignmentBlock,
   computeProjectStats,
   createDocumentProject,
@@ -22,6 +30,7 @@ import {
   SAMPLE_SOURCE_TEXT,
   swapBlockSides,
   updateBlockJapaneseText,
+  updateSentenceTextInBlock,
 } from '../core/document-builder.js';
 import { DEFAULT_JA_NORM_OPTIONS, SAMPLE_GLOSSARY_ENTRIES } from '../core/glossary.js';
 import { reconcileReloadedBlocks } from '../core/hash-diff.js';
@@ -60,7 +69,9 @@ export function createAppStore() {
     searchQuery: '',
     selectedGroupId: null,
     openMemoGroupIds: new Set(),
+    openClauseGroupIds: new Set(),
     editingJaBlockIds: new Set(),
+    editingSentenceTarget: null, // { blockId, lang, sentenceId }
     activeSplitTarget: null, // { blockId, lang, sentenceId, offset }
     activeModal: null, // null | 'import' | 'json' | 'settings' | 'shortcuts' | 'glossary' | 'tm'
     glossaryTab: 'list', // 'list' | 'lookup' | 'csv'
@@ -507,6 +518,75 @@ export function createAppStore() {
         updateSentenceMarkersInBlock(blk, lang, sentenceId, () => []),
       );
       showToast('この文のマーカをすべて解除しました');
+    },
+    toggleClauseWorkbench(groupId, forceOpen = null) {
+      const next = new Set(state.openClauseGroupIds);
+      const shouldOpen = forceOpen !== null ? forceOpen : !next.has(groupId);
+      if (shouldOpen) next.add(groupId);
+      else next.delete(groupId);
+      state.openClauseGroupIds = next;
+      notify();
+    },
+    addClausePair(blockId, groupId, { enSpan = null, jaSpan = null } = {}) {
+      let createdId = null;
+      const nextOpen = new Set(state.openClauseGroupIds);
+      nextOpen.add(groupId);
+      state.openClauseGroupIds = nextOpen;
+      state.selectedGroupId = groupId;
+      mutateBlock(blockId, (blk) => {
+        const res = addClausePairInGroup(blk, groupId, { enSpan, jaSpan });
+        createdId = res.pairId;
+        return res.block;
+      });
+      if (createdId) {
+        showToast('文節対比ペアを追加しました（対になる文節を選んで見比べできます）');
+      }
+      return createdId;
+    },
+    attachSpanToClausePair(blockId, groupId, pairId, lang, span) {
+      const nextOpen = new Set(state.openClauseGroupIds);
+      nextOpen.add(groupId);
+      state.openClauseGroupIds = nextOpen;
+      state.selectedGroupId = groupId;
+      mutateBlock(blockId, (blk) => attachSpanToClausePairInGroup(blk, groupId, pairId, lang, span));
+      showToast(lang === 'ja' ? '和文の文節をペアに紐付けました' : '英文の文節をペアに紐付けました');
+    },
+    toggleClausePairChecked(blockId, groupId, pairId, forceVal = null) {
+      mutateBlock(blockId, (blk) =>
+        toggleClausePairCheckedInGroup(blk, groupId, pairId, forceVal),
+      );
+    },
+    updateClausePairNote(blockId, groupId, pairId, note) {
+      mutateBlock(blockId, (blk) => updateClausePairNoteInGroup(blk, groupId, pairId, note));
+    },
+    removeClausePair(blockId, groupId, pairId) {
+      mutateBlock(blockId, (blk) => removeClausePairInGroup(blk, groupId, pairId));
+    },
+    clearClausePairs(blockId, groupId) {
+      mutateBlock(blockId, (blk) => clearClausePairsInGroup(blk, groupId));
+      const nextOpen = new Set(state.openClauseGroupIds);
+      nextOpen.delete(groupId);
+      state.openClauseGroupIds = nextOpen;
+      notify();
+      showToast('文節対比の一時分割をクリアしました');
+    },
+    startEditSentence(blockId, lang, sentenceId) {
+      state.editingSentenceTarget = { blockId, lang, sentenceId };
+      notify();
+    },
+    cancelEditSentence() {
+      state.editingSentenceTarget = null;
+      notify();
+    },
+    saveEditedSentenceText(blockId, lang, sentenceId, newRawText) {
+      const clean = String(newRawText || '').trim();
+      if (!clean) {
+        showToast('空文にはできません（削除する場合は文の結合等をご利用ください）', true);
+        return;
+      }
+      mutateBlock(blockId, (blk) => updateSentenceTextInBlock(blk, lang, sentenceId, clean), true);
+      state.editingSentenceTarget = null;
+      showToast('文のテキストを更新しました（他の対応関係はそのまま維持されています）');
     },
     async setBlockAllStatus(blockId, status) {
       let targetBlock = null;

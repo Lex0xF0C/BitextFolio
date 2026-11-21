@@ -3,6 +3,12 @@
  */
 
 import { computeGroupHints } from '../core/alignment.js';
+import {
+  collectSentenceClauseHighlights,
+  computeClauseCoverage,
+  findWaitingClausePairId,
+  suggestDeterministicClauseChunks,
+} from '../core/clauses.js';
 import { checkGroupGlossary } from '../core/glossary.js';
 import { buildDuplicateJaIndex, detectGroupHints } from '../core/hints.js';
 import {
@@ -35,6 +41,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
   let rememberedJaSelection = null; // { groupId, text }
   let quickRegisterState = null; // { mode: 'tm' | 'glossary', blockId, groupId, enText, jaText, jaSuggestions }
   const unmatchedDrafts = new Map(); // `${groupId}:${lang}` -> string
+  const showChunkHelperGroupIds = new Set();
 
   // Build persistent shell once so inputs (search, memo) never lose focus unnecessarily
   const projectSelect = el('select', {
@@ -453,7 +460,49 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       );
     }
 
-    if (sentenceObj && (selRange || (sentenceObj.markers || []).length > 0)) {
+    if (sentenceObj && selRange) {
+      const spanPayload = {
+        sentenceId: sentenceObj.id,
+        start: selRange.start,
+        end: selRange.end,
+        text: selRange.text,
+      };
+      const waitingPairId = findWaitingClausePairId(group, lang);
+      const waitingIdx = waitingPairId
+        ? (group.clausePairs || []).findIndex((p) => p.id === waitingPairId) + 1
+        : 0;
+      if (waitingPairId) {
+        items.push(
+          el('button', {
+            type: 'button',
+            className: 'context-menu-item',
+            textContent: `文節対比：ペア #${waitingIdx} の${lang === 'en' ? '英文' : '和文'}にセット [C]`,
+            onClick: () => {
+              closeContextMenu();
+              clearBrowserSelection();
+              store.attachSpanToClausePair(block.id, group.id, waitingPairId, lang, spanPayload);
+            },
+          }),
+        );
+      }
+      items.push(
+        el('button', {
+          type: 'button',
+          className: 'context-menu-item',
+          textContent: '文節対比：新しい確認ペアを作成 [C]',
+          onClick: () => {
+            closeContextMenu();
+            clearBrowserSelection();
+            store.addClausePair(
+              block.id,
+              group.id,
+              lang === 'en' ? { enSpan: spanPayload } : { jaSpan: spanPayload },
+            );
+          },
+        }),
+      );
+      items.push(el('div', { className: 'context-menu-divider', role: 'separator' }));
+    } else if (sentenceObj && (sentenceObj.markers || []).length > 0) {
       items.push(el('div', { className: 'context-menu-divider', role: 'separator' }));
     }
 
@@ -727,6 +776,12 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       store.state.activeSplitTarget.lang === lang &&
       store.state.activeSplitTarget.sentenceId === sentence.id;
 
+    const isEditingText =
+      store.state.editingSentenceTarget &&
+      store.state.editingSentenceTarget.blockId === block.id &&
+      store.state.editingSentenceTarget.lang === lang &&
+      store.state.editingSentenceTarget.sentenceId === sentence.id;
+
     const itemEl = el('div', {
       className: 'sentence-item',
       dataset: { sentenceId: sentence.id, lang },
@@ -756,10 +811,55 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       textContent: `${lang.toUpperCase()}-${listIdx + 1}`,
     });
 
+    const clauseHighlights = collectSentenceClauseHighlights(group, lang, sentence.id);
     const textEl = el('p', { className: 'sentence-text' });
-    textEl.appendChild(renderRichSentenceFragment(sentence.rawText, sentence.markers));
+    textEl.appendChild(
+      renderRichSentenceFragment(sentence.rawText, sentence.markers, clauseHighlights),
+    );
 
     itemEl.appendChild(el('div', { className: 'sentence-top-row' }, [handle, idBadge, textEl]));
+
+    if (isEditingText) {
+      const editInput = el('textarea', {
+        className: 'sentence-edit-textarea',
+        value: sentence.rawText,
+        dataset: { editSentenceId: sentence.id },
+        'aria-label': '文テキストを修正',
+        onKeydown: (ev) => {
+          if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+            ev.preventDefault();
+            store.saveEditedSentenceText(block.id, lang, sentence.id, editInput.value);
+          } else if (ev.key === 'Escape') {
+            ev.preventDefault();
+            store.cancelEditSentence();
+          }
+        },
+      });
+      itemEl.appendChild(
+        el('div', { className: 'split-editor' }, [
+          el('div', {
+            className: 'split-editor-hint',
+            textContent: 'この文だけを修正します（他の文との対応関係や確認状態は保持されます）。',
+          }),
+          editInput,
+          el('div', { className: 'toolbar-group' }, [
+            el('button', {
+              type: 'button',
+              className: 'btn btn-primary btn-xs',
+              textContent: '保存 (Ctrl+Enter)',
+              onClick: () =>
+                store.saveEditedSentenceText(block.id, lang, sentence.id, editInput.value),
+            }),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-xs',
+              textContent: 'キャンセル',
+              onClick: () => store.cancelEditSentence(),
+            }),
+          ]),
+        ]),
+      );
+    }
 
     if (isSplitting) {
       const maxOffset = Math.max(1, sentence.rawText.length - 1);
@@ -818,6 +918,21 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
 
     const markerPct = computeMarkerCoveragePercent(sentence.markers, sentence.plainText.length);
     const actions = el('div', { className: 'sentence-actions' }, [
+      el('button', {
+        type: 'button',
+        className: 'btn btn-ghost btn-xs',
+        textContent: '文を修正',
+        title: '訳漏れや誤訳を見つけたときに、この文のテキストだけを直接修正します',
+        onClick: () => {
+          store.startEditSentence(block.id, lang, sentence.id);
+          requestAnimationFrame(() => {
+            const ta = blocksList.querySelector(
+              `textarea[data-edit-sentence-id="${CSS.escape(sentence.id)}"]`,
+            );
+            if (ta) ta.focus();
+          });
+        },
+      }),
       el('button', {
         type: 'button',
         className: 'btn btn-ghost btn-xs',
@@ -1160,6 +1275,278 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
 
       groupEl.appendChild(el('div', { className: colsClass }, [enCell, jaCell]));
 
+      const clausePairs = group.clausePairs || [];
+      const clauseOpen = store.state.openClauseGroupIds.has(group.id);
+      const clauseCov = computeClauseCoverage(group, enItems, jaItems);
+
+      if (clauseOpen) {
+        const showChunks = showChunkHelperGroupIds.has(group.id);
+        const wb = el('div', { className: 'clause-workbench' });
+
+        const captureAndAttach = (pairId, targetLang) => {
+          const picked = captureCurrentSelectionSpan(targetLang, group.id);
+          if (!picked) {
+            store.showToast(
+              targetLang === 'en'
+                ? 'この枠の英文をドラッグ選択してからクリックしてください'
+                : targetLang === 'ja'
+                  ? 'この枠の和文をドラッグ選択してからクリックしてください'
+                  : 'この枠内の英文または和文をドラッグ選択してください',
+              true,
+            );
+            return;
+          }
+          clearBrowserSelection();
+          if (pairId) {
+            store.attachSpanToClausePair(block.id, group.id, pairId, picked.lang, picked.span);
+          } else {
+            store.addClausePair(
+              block.id,
+              group.id,
+              picked.lang === 'en' ? { enSpan: picked.span } : { jaSpan: picked.span },
+            );
+          }
+        };
+
+        wb.appendChild(
+          el('div', { className: 'clause-workbench-header' }, [
+            el('div', { className: 'clause-workbench-title-group' }, [
+              el('strong', { textContent: '文節対比（一時チェック）' }),
+              el('span', {
+                className: 'meta-sep tabular-nums',
+                textContent: `確認済 ${clauseCov.checkedPairs}/${clauseCov.totalPairs} · 英 ${clauseCov.enPercent}% / 和 ${clauseCov.jaPercent}%`,
+              }),
+            ]),
+            el('div', { className: 'toolbar-group' }, [
+              el('button', {
+                type: 'button',
+                className: 'btn btn-primary btn-xs',
+                textContent: '+ 選択範囲から新規ペア [C]',
+                title: '上の英文または和文をドラッグ選択してクリック（または C キー）すると、新しい対比ペアを作ります',
+                onMousedown: (ev) => ev.preventDefault(),
+                onClick: () => captureAndAttach(null, null),
+              }),
+              el('button', {
+                type: 'button',
+                className: `btn btn-xs${showChunks ? ' is-clause-active' : ''}`,
+                textContent: showChunks ? '区切り候補を隠す' : '区切り候補を表示',
+                title: '読点（、）やカンマ（,）・接続詞などで一時的な区切り候補を表示し、クリックだけでセットできるようにします',
+                onClick: () => {
+                  if (showChunks) showChunkHelperGroupIds.delete(group.id);
+                  else showChunkHelperGroupIds.add(group.id);
+                  renderVisibleWindow(true);
+                },
+              }),
+              clausePairs.length > 0
+                ? el('button', {
+                    type: 'button',
+                    className: 'btn btn-xs',
+                    textContent: 'すべてクリア',
+                    onClick: () => store.clearClausePairs(block.id, group.id),
+                  })
+                : null,
+              el('button', {
+                type: 'button',
+                className: 'btn btn-xs',
+                textContent: '折りたたむ',
+                onClick: () => store.toggleClauseWorkbench(group.id, false),
+              }),
+            ]),
+          ]),
+        );
+
+        if (clausePairs.length === 0) {
+          wb.appendChild(
+            el('div', {
+              className: 'clause-guide-line',
+              textContent:
+                '手順: ① 上の英文から確認したい文節をドラッグ →「+ 選択範囲から新規ペア」(または C キー) → ② 対応する和文をドラッグ →「選択和文をセット」(または C キー) → ③ 隣り合わせで見比べて「✓ 整合OK」',
+            }),
+          );
+        }
+
+        if (showChunks) {
+          const chunkWrap = el('div', { className: 'clause-chunk-helper' });
+          const renderChunkColumn = (items, cLang, label) => {
+            const col = el('div', { className: 'clause-chunk-col' }, [
+              el('div', { className: 'clause-chunk-label', textContent: label }),
+            ]);
+            const chips = el('div', { className: 'clause-chunk-chips' });
+            for (const sItem of items) {
+              const chunks = suggestDeterministicClauseChunks(sItem.plainText, cLang);
+              for (const ch of chunks) {
+                chips.appendChild(
+                  el('button', {
+                    type: 'button',
+                    className: 'btn btn-xs candidate-chip-btn',
+                    textContent: ch.text,
+                    onClick: () => {
+                      const sp = {
+                        sentenceId: sItem.id,
+                        start: ch.start,
+                        end: ch.end,
+                        text: ch.text,
+                      };
+                      const waitId = findWaitingClausePairId(group, cLang);
+                      if (waitId) {
+                        store.attachSpanToClausePair(block.id, group.id, waitId, cLang, sp);
+                      } else {
+                        store.addClausePair(
+                          block.id,
+                          group.id,
+                          cLang === 'en' ? { enSpan: sp } : { jaSpan: sp },
+                        );
+                      }
+                    },
+                  }),
+                );
+              }
+            }
+            col.appendChild(chips);
+            return col;
+          };
+          chunkWrap.appendChild(renderChunkColumn(enItems, 'en', '英語の区切り候補（クリックでセット）:'));
+          chunkWrap.appendChild(renderChunkColumn(jaItems, 'ja', '日本語の区切り候補（クリックでセット）:'));
+          wb.appendChild(chunkWrap);
+        }
+
+        const pairsGridClass =
+          store.state.layoutMode === 'stacked'
+            ? 'clause-pair-grid layout-stacked'
+            : 'clause-pair-grid';
+
+        clausePairs.forEach((pair, pIdx) => {
+          const pairRow = el('div', {
+            className: `clause-pair-row${pair.checked ? ' is-checked' : ''}`,
+          });
+
+          const noteInput = el('input', {
+            type: 'text',
+            className: 'clause-note-input',
+            value: pair.note || '',
+            dataset: { clauseNoteId: pair.id },
+            placeholder: '差分・補足メモ（任意）',
+            'aria-label': `文節ペア #${pIdx + 1} のメモ`,
+            onInput: (ev) => store.updateClausePairNote(block.id, group.id, pair.id, ev.target.value),
+          });
+
+          pairRow.appendChild(
+            el('div', { className: 'clause-pair-header' }, [
+              el('div', { className: 'toolbar-group' }, [
+                el('span', {
+                  className: 'sentence-id tabular-nums',
+                  textContent: `文節 #${pIdx + 1}`,
+                }),
+                el('button', {
+                  type: 'button',
+                  className: `btn btn-xs${pair.checked ? ' is-clause-ok' : ''}`,
+                  'aria-pressed': pair.checked ? 'true' : 'false',
+                  textContent: pair.checked ? '✓ 整合OK' : '整合OKにする',
+                  onClick: () => store.toggleClausePairChecked(block.id, group.id, pair.id),
+                }),
+              ]),
+              el('div', { className: 'clause-pair-header-right' }, [
+                noteInput,
+                el('button', {
+                  type: 'button',
+                  className: 'btn btn-ghost btn-xs',
+                  textContent: '×',
+                  title: 'この文節ペアを削除',
+                  onClick: () => store.removeClausePair(block.id, group.id, pair.id),
+                }),
+              ]),
+            ]),
+          );
+
+          const enBox = el('div', { className: 'clause-side-box' });
+          if (pair.enSpan) {
+            enBox.appendChild(el('div', { className: 'clause-side-text', textContent: pair.enSpan.text }));
+            enBox.appendChild(
+              el('div', { className: 'clause-side-actions' }, [
+                el('button', {
+                  type: 'button',
+                  className: 'btn btn-ghost btn-xs',
+                  textContent: '選択英文で上書',
+                  onMousedown: (ev) => ev.preventDefault(),
+                  onClick: () => captureAndAttach(pair.id, 'en'),
+                }),
+              ]),
+            );
+          } else {
+            enBox.appendChild(
+              el('div', {
+                className: 'clause-empty-hint',
+                textContent: '対応する英文をドラッグ選択してセット',
+              }),
+            );
+            enBox.appendChild(
+              el('button', {
+                type: 'button',
+                className: 'btn btn-xs',
+                textContent: '選択英文をセット',
+                onMousedown: (ev) => ev.preventDefault(),
+                onClick: () => captureAndAttach(pair.id, 'en'),
+              }),
+            );
+          }
+
+          const jaBox = el('div', { className: 'clause-side-box' });
+          if (pair.jaSpan) {
+            jaBox.appendChild(el('div', { className: 'clause-side-text', textContent: pair.jaSpan.text }));
+            const targetJaId = pair.jaSpan.sentenceId || jaItems[0]?.id;
+            jaBox.appendChild(
+              el('div', { className: 'clause-side-actions' }, [
+                el('button', {
+                  type: 'button',
+                  className: 'btn btn-ghost btn-xs',
+                  textContent: '選択和文で上書',
+                  onMousedown: (ev) => ev.preventDefault(),
+                  onClick: () => captureAndAttach(pair.id, 'ja'),
+                }),
+                targetJaId
+                  ? el('button', {
+                      type: 'button',
+                      className: 'btn btn-ghost btn-xs',
+                      textContent: '和文を修正',
+                      title: '不足や過剰が見つかったとき、元の日本語文を直接修正します',
+                      onClick: () => {
+                        store.startEditSentence(block.id, 'ja', targetJaId);
+                        requestAnimationFrame(() => {
+                          const ta = blocksList.querySelector(
+                            `textarea[data-edit-sentence-id="${CSS.escape(targetJaId)}"]`,
+                          );
+                          if (ta) ta.focus();
+                        });
+                      },
+                    })
+                  : null,
+              ]),
+            );
+          } else {
+            jaBox.appendChild(
+              el('div', {
+                className: 'clause-empty-hint',
+                textContent: '対応する和文をドラッグ選択して下のボタン（または C キー）',
+              }),
+            );
+            jaBox.appendChild(
+              el('button', {
+                type: 'button',
+                className: 'btn btn-primary btn-xs',
+                textContent: '選択和文をセット',
+                onMousedown: (ev) => ev.preventDefault(),
+                onClick: () => captureAndAttach(pair.id, 'ja'),
+              }),
+            );
+          }
+
+          pairRow.appendChild(el('div', { className: pairsGridClass }, [enBox, jaBox]));
+          wb.appendChild(pairRow);
+        });
+
+        groupEl.appendChild(wb);
+      }
+
       if (quickRegisterState && quickRegisterState.groupId === group.id) {
         const qState = quickRegisterState;
         const enQuickInput = el('input', {
@@ -1485,6 +1872,17 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             textContent: group.tempNoOmission ? '✓ 訳漏れなし（一時記録）' : '訳漏れなし(仮)',
             title: '「確認済」にする前の一時チェックとして、この枠に訳漏れがないことを記録します（Tキーでも切替可）',
             onClick: () => store.toggleGroupTempNoOmission(block.id, group.id),
+          }),
+          el('button', {
+            type: 'button',
+            className: `btn btn-xs${clauseOpen || clausePairs.length > 0 ? ' is-clause-active' : ''}`,
+            'aria-expanded': clauseOpen ? 'true' : 'false',
+            textContent:
+              clausePairs.length > 0
+                ? `文節対比 (${clauseCov.checkedPairs}/${clauseCov.totalPairs})`
+                : '文節対比',
+            title: '長文の翻訳漏れ確認用に、文節単位で一時的に切り出して日英を並べて見比べます',
+            onClick: () => store.toggleClauseWorkbench(group.id),
           }),
           el('button', {
             type: 'button',
@@ -1850,37 +2248,37 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       );
     }
 
-    // Preserve active memo or unmatched-input focus across re-renders
+    // Preserve active memo, unmatched-input, sentence-edit, or clause-note focus across re-renders
     const activeEl = document.activeElement;
     const activeMemoGroupId = activeEl?.dataset?.memoGroupId || null;
     const activeUnmatchedKey = activeEl?.dataset?.unmatchedInputKey || null;
-    const selectionStart =
-      activeMemoGroupId || activeUnmatchedKey ? activeEl.selectionStart : null;
-    const selectionEnd =
-      activeMemoGroupId || activeUnmatchedKey ? activeEl.selectionEnd : null;
+    const activeEditSentenceId = activeEl?.dataset?.editSentenceId || null;
+    const activeClauseNoteId = activeEl?.dataset?.clauseNoteId || null;
+    const hasTrackedInput =
+      activeMemoGroupId || activeUnmatchedKey || activeEditSentenceId || activeClauseNoteId;
+    const selectionStart = hasTrackedInput ? activeEl.selectionStart : null;
+    const selectionEnd = hasTrackedInput ? activeEl.selectionEnd : null;
 
     renderVisibleWindow(true);
 
+    const restoreFocus = (selector) => {
+      const restored = blocksList.querySelector(selector);
+      if (restored) {
+        restored.focus();
+        if (selectionStart !== null && selectionEnd !== null) {
+          restored.setSelectionRange(selectionStart, selectionEnd);
+        }
+      }
+    };
+
     if (activeMemoGroupId) {
-      const restored = blocksList.querySelector(
-        `textarea[data-memo-group-id="${CSS.escape(activeMemoGroupId)}"]`,
-      );
-      if (restored) {
-        restored.focus();
-        if (selectionStart !== null && selectionEnd !== null) {
-          restored.setSelectionRange(selectionStart, selectionEnd);
-        }
-      }
+      restoreFocus(`textarea[data-memo-group-id="${CSS.escape(activeMemoGroupId)}"]`);
     } else if (activeUnmatchedKey) {
-      const restored = blocksList.querySelector(
-        `textarea[data-unmatched-input-key="${CSS.escape(activeUnmatchedKey)}"]`,
-      );
-      if (restored) {
-        restored.focus();
-        if (selectionStart !== null && selectionEnd !== null) {
-          restored.setSelectionRange(selectionStart, selectionEnd);
-        }
-      }
+      restoreFocus(`textarea[data-unmatched-input-key="${CSS.escape(activeUnmatchedKey)}"]`);
+    } else if (activeEditSentenceId) {
+      restoreFocus(`textarea[data-edit-sentence-id="${CSS.escape(activeEditSentenceId)}"]`);
+    } else if (activeClauseNoteId) {
+      restoreFocus(`input[data-clause-note-id="${CSS.escape(activeClauseNoteId)}"]`);
     }
 
     // Toasts
@@ -1976,6 +2374,68 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     return true;
   }
 
+  function captureCurrentSelectionSpan(expectedLang = null, expectedGroupId = null) {
+    const proj = store.getActiveProject();
+    if (!proj) return null;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+
+    const range = sel.getRangeAt(0);
+    const sentenceItemEl = findSelectedSentenceElement(range);
+    if (!sentenceItemEl) return null;
+
+    const lang = sentenceItemEl.dataset.lang;
+    if (expectedLang && lang !== expectedLang) return null;
+    const groupId = sentenceItemEl.closest('.alignment-group')?.dataset?.groupId;
+    if (expectedGroupId && groupId !== expectedGroupId) return null;
+
+    const sentenceTextEl = sentenceItemEl.querySelector('.sentence-text');
+    const selRange = getSelectionOffsetsInSentence(sentenceTextEl);
+    if (!selRange) return null;
+
+    const sentenceId = sentenceItemEl.dataset.sentenceId;
+    const blockId = sentenceItemEl.closest('.block-section')?.dataset?.blockId;
+    const block = proj.blocks.find((b) => b.id === blockId);
+    if (!block) return null;
+    const group = (block.groups || []).find((g) => g.id === groupId);
+    if (!group) return null;
+
+    return {
+      block,
+      group,
+      lang,
+      sentenceId,
+      span: {
+        sentenceId,
+        start: selRange.start,
+        end: selRange.end,
+        text: selRange.text,
+      },
+    };
+  }
+
+  function captureClauseFromSelection() {
+    const picked = captureCurrentSelectionSpan();
+    if (!picked) {
+      store.showToast('英文または和文の文節をドラッグ選択してから C キーを押してください');
+      return false;
+    }
+    closeContextMenu();
+    clearBrowserSelection();
+    const { block, group, lang, span } = picked;
+    const waitingPairId = findWaitingClausePairId(group, lang);
+    if (waitingPairId) {
+      store.attachSpanToClausePair(block.id, group.id, waitingPairId, lang, span);
+    } else {
+      store.addClausePair(
+        block.id,
+        group.id,
+        lang === 'en' ? { enSpan: span } : { jaSpan: span },
+      );
+    }
+    return true;
+  }
+
   return {
     modalRoot,
     render,
@@ -1983,5 +2443,6 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     scrollToBlockOrGroup,
     jumpToLastFocused,
     markCurrentSelection,
+    captureClauseFromSelection,
   };
 }

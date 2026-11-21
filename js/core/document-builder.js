@@ -14,6 +14,8 @@ import {
 import { checkGroupGlossary, DEFAULT_JA_NORM_OPTIONS } from './glossary.js';
 import { buildBlockHashes } from './hash-diff.js';
 import { buildDuplicateJaIndex, detectGroupHints } from './hints.js';
+import { normalizeMarkerRanges } from './markers.js';
+import { stripInlineMarkup } from './markup.js';
 import { DEFAULT_ABBREVIATIONS, splitEnglishSentences, splitJapaneseSentences } from './sentence-splitter.js';
 
 export const SAMPLE_SOURCE_TEXT = `During security incident handling, *triage* is the initial process of assessing incoming
@@ -191,6 +193,72 @@ export function insertTextIntoGroup(block, groupId, lang, rawInput, abbreviation
     [listKey]: nextSentences,
     groups: nextGroups,
     warnings: cleanedWarnings,
+    ...hashes,
+  });
+}
+
+/**
+ * Updates a single sentence's raw text in place without re-splitting or resetting groups.
+ * Useful when fixing an omission or excess spotted during clause-level review.
+ */
+export function updateSentenceTextInBlock(block, lang, sentenceId, newRawText) {
+  const clean = String(newRawText || '').trim();
+  if (!clean || !block) return block;
+  const listKey = lang === 'en' ? 'enSentences' : 'jaSentences';
+  const rawKey = lang === 'en' ? 'enRaw' : 'jaRaw';
+  const spanKey = lang === 'en' ? 'enSpan' : 'jaSpan';
+  const sentences = block[listKey] || [];
+  let changed = false;
+  let newPlain = '';
+
+  const nextSentences = sentences.map((s) => {
+    if (s.id !== sentenceId) return s;
+    changed = true;
+    newPlain = stripInlineMarkup(clean);
+    return {
+      ...s,
+      rawText: clean,
+      plainText: newPlain,
+      markers: normalizeMarkerRanges(s.markers || [], newPlain.length),
+    };
+  });
+  if (!changed) return block;
+
+  const rebuiltRaw = nextSentences.map((s) => s.rawText).join(lang === 'en' ? ' ' : '');
+  const nextEnRaw = lang === 'en' ? rebuiltRaw : block.enRaw;
+  const nextJaRaw = lang === 'ja' ? rebuiltRaw : block.jaRaw;
+  const hashes = buildBlockHashes(nextEnRaw, nextJaRaw);
+
+  const nextGroups = (block.groups || []).map((g) => {
+    if (!Array.isArray(g.clausePairs) || g.clausePairs.length === 0) return g;
+    const nextPairs = g.clausePairs.map((pair) => {
+      const sp = pair[spanKey];
+      if (!sp || sp.sentenceId !== sentenceId) return pair;
+      if (sp.end <= newPlain.length && newPlain.slice(sp.start, sp.end) === sp.text) {
+        return pair;
+      }
+      const relocated = newPlain.indexOf(sp.text);
+      if (relocated !== -1) {
+        return {
+          ...pair,
+          [spanKey]: { ...sp, start: relocated, end: relocated + sp.text.length },
+        };
+      }
+      const clampedStart = Math.max(0, Math.min(sp.start, newPlain.length));
+      const clampedEnd = Math.max(clampedStart, Math.min(sp.end, newPlain.length));
+      return {
+        ...pair,
+        [spanKey]: { ...sp, start: clampedStart, end: clampedEnd },
+      };
+    });
+    return { ...g, clausePairs: nextPairs };
+  });
+
+  return syncBlockMeta({
+    ...block,
+    [rawKey]: rebuiltRaw,
+    [listKey]: nextSentences,
+    groups: nextGroups,
     ...hashes,
   });
 }

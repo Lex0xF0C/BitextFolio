@@ -42,11 +42,12 @@ js/
 │   ├── block-parser.js     # Blank-line block parsing, alternating & English-only pairing
 │   ├── sentence-splitter.js# EN/JA deterministic sentence splitting & list-line splitting
 │   ├── alignment.js        # n:m group operations, anchor hints, DP alignment
+│   ├── clauses.js          # Non-destructive ad-hoc clause comparison pairs & chunker
 │   ├── hash-diff.js        # Source-replacement hash reconciliation
 │   ├── glossary.js         # EN inflection + manual variants, JA normalization, CSV/TSV
 │   ├── tm.js               # Char n-gram TM, discrepancy detection, TMX 1.4b, term extraction
 │   ├── hints.js            # Number/URL/acronym omission, contamination & copy-paste checks
-│   └── document-builder.js # Project/block construction, stats, inline group text insertion
+│   └── document-builder.js # Project/block construction, stats, inline text editing
 ├── storage/                # Browser-local persistence & local file I/O
 │   ├── indexed-db.js       # IndexedDB (with localStorage fallback); bump DB_VERSION on new stores
 │   └── json-io.js          # UTF-8 FileReader & Blob downloads (JSON / CSV / TSV / TMX)

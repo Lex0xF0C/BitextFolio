@@ -30,6 +30,10 @@
   --marker-bg: #fef08a;
   --marker-fg: #422006;
   --marker-border: #eab308;
+  --clause-pending-bg: #e0f2fe;
+  --clause-pending-border: #0284c7;
+  --clause-checked-bg: #dcfce7;
+  --clause-checked-border: #16a34a;
   --focus-ring: #2563eb;
   --font-sans: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Cascadia Mono", "Consolas", "SFMono-Regular", ui-monospace, monospace;
@@ -71,6 +75,10 @@ html.dark {
   --marker-bg: #713f12;
   --marker-fg: #fef9c3;
   --marker-border: #ca8a04;
+  --clause-pending-bg: #0c4a6e;
+  --clause-pending-border: #38bdf8;
+  --clause-checked-bg: #064e3b;
+  --clause-checked-border: #4ade80;
   --focus-ring: #60a5fa;
 }
 
@@ -799,6 +807,33 @@ mark.sentence-marker {
   padding: 1px 0;
 }
 
+.clause-span {
+  border-radius: 2px;
+  padding: 1px 0;
+}
+
+.clause-span.is-pending {
+  background-color: var(--clause-pending-bg);
+  border-bottom: 2px dashed var(--clause-pending-border);
+}
+
+.clause-span.is-checked {
+  background-color: var(--clause-checked-bg);
+  border-bottom: 2px solid var(--clause-checked-border);
+}
+
+.sentence-edit-textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface);
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
 .marker-clear-chip {
   background-color: var(--status-warning-bg);
   color: var(--status-warning-fg);
@@ -900,6 +935,177 @@ mark.sentence-marker {
   color: var(--status-read-fg);
   border-color: var(--status-read-border);
   font-weight: 600;
+}
+
+.btn.is-clause-active {
+  background-color: var(--bg-selected);
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.btn.is-clause-ok {
+  background-color: var(--status-verified-bg);
+  color: var(--status-verified-fg);
+  border-color: var(--status-verified-border);
+  font-weight: 600;
+}
+
+/* Clause-level Ad-hoc Comparison Workbench */
+.clause-workbench {
+  padding: 10px 18px 14px;
+  background-color: var(--bg-subtle);
+  border-top: 1px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.clause-workbench-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.clause-workbench-title-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.clause-guide-line {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background-color: var(--bg-surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+}
+
+.clause-chunk-helper {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 8px 10px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+}
+
+.clause-chunk-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.clause-chunk-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.clause-chunk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.clause-chunk-chips .candidate-chip-btn {
+  text-align: left;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.clause-pair-row {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--clause-pending-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.clause-pair-row.is-checked {
+  border-left-color: var(--clause-checked-border);
+  background-color: var(--status-verified-bg);
+}
+
+.clause-pair-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  background-color: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.clause-pair-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 180px;
+  justify-content: flex-end;
+}
+
+.clause-note-input {
+  flex: 1;
+  max-width: 320px;
+  min-width: 120px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface);
+}
+
+.clause-pair-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.clause-pair-grid.layout-stacked {
+  grid-template-columns: 1fr;
+}
+
+.clause-side-box {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.clause-pair-grid:not(.layout-stacked) .clause-side-box:first-child {
+  border-right: 1px dashed var(--border-hairline);
+}
+
+.clause-pair-grid.layout-stacked .clause-side-box:first-child {
+  border-bottom: 1px dashed var(--border-hairline);
+}
+
+.clause-side-text {
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.clause-side-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.clause-empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .status-label-text {
@@ -1349,6 +1555,16 @@ mark.sentence-marker {
 
   .split-preview-box {
     grid-template-columns: 1fr;
+  }
+
+  .clause-chunk-helper,
+  .clause-pair-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .clause-pair-grid:not(.layout-stacked) .clause-side-box:first-child {
+    border-right: none;
+    border-bottom: 1px dashed var(--border-hairline);
   }
 }
 

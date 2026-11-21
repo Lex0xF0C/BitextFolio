@@ -9,11 +9,24 @@ import {
   updateSentenceMarkersInBlock,
 } from '../js/core/alignment.js';
 import {
+  addClausePairInGroup,
+  attachSpanToClausePairInGroup,
+  clearClausePairsInGroup,
+  collectSentenceClauseHighlights,
+  computeClauseCoverage,
+  findWaitingClausePairId,
+  removeClausePairInGroup,
+  suggestDeterministicClauseChunks,
+  toggleClausePairCheckedInGroup,
+  updateClausePairNoteInGroup,
+} from '../js/core/clauses.js';
+import {
   addMarkerRange,
   computeMarkerCoveragePercent,
   hasMarkerOverlap,
   isRangeFullyMarked,
   removeMarkerRange,
+  splitTokensByHighlights,
   splitTokensByMarkers,
 } from '../js/core/markers.js';
 import { pairClassifiedBlocks, splitIntoRawBlocks } from '../js/core/block-parser.js';
@@ -23,6 +36,7 @@ import {
   parseDocumentBlocks,
   SAMPLE_SOURCE_TEXT,
   updateBlockJapaneseText,
+  updateSentenceTextInBlock,
 } from '../js/core/document-builder.js';
 import {
   checkGroupGlossary,
@@ -455,3 +469,89 @@ test('Sentence marker ranges normalize, subtract, split tokens, and survive sent
   assert.equal(blk.enSentences.length, 1);
   assert.deepEqual(blk.enSentences[0].markers, [{ start: 0, end: 22 }]);
 });
+
+test('Clause-level comparison pairs track waiting pair, coverage, highlights, chunking, and inline sentence edits', () => {
+  let blk = buildAlignmentBlock(
+    'When teams detect an anomaly, they must isolate the host, and they should preserve logs.',
+    'チームが異常を検知した場合、対象ホストを隔離し、ログを保全しなければならない。',
+    0,
+  );
+  const gid = blk.groups[0].id;
+  const enId = blk.enSentences[0].id;
+  const jaId = blk.jaSentences[0].id;
+
+  // Step 1: Capture an English clause first
+  const { block: b1, pairId: p1 } = addClausePairInGroup(blk, gid, {
+    enSpan: { sentenceId: enId, start: 0, end: 28, text: 'When teams detect an anomaly' },
+  });
+  blk = b1;
+  assert.ok(p1);
+  assert.equal(findWaitingClausePairId(blk.groups[0], 'ja'), p1);
+
+  // Step 2: Attach corresponding Japanese clause
+  blk = attachSpanToClausePairInGroup(blk, gid, p1, 'ja', {
+    sentenceId: jaId,
+    start: 0,
+    end: 13,
+    text: 'チームが異常を検知した場合',
+  });
+  assert.equal(findWaitingClausePairId(blk.groups[0], 'ja'), null);
+
+  // Highlights start as pending, then move to checked when confirmed
+  let enHighlights = collectSentenceClauseHighlights(blk.groups[0], 'en', enId);
+  assert.equal(enHighlights.pending.length, 1);
+  assert.equal(enHighlights.checked.length, 0);
+
+  blk = updateClausePairNoteInGroup(blk, gid, p1, '条件節OK');
+  blk = toggleClausePairCheckedInGroup(blk, gid, p1, true);
+  enHighlights = collectSentenceClauseHighlights(blk.groups[0], 'en', enId);
+  assert.equal(enHighlights.pending.length, 0);
+  assert.equal(enHighlights.checked.length, 1);
+
+  const cov = computeClauseCoverage(blk.groups[0], blk.enSentences, blk.jaSentences);
+  assert.equal(cov.totalPairs, 1);
+  assert.equal(cov.checkedPairs, 1);
+  assert.ok(cov.enPercent > 20 && cov.jaPercent > 20);
+
+  // Deterministic punctuation chunker splits long EN and JA sentences cleanly
+  const enChunks = suggestDeterministicClauseChunks(blk.enSentences[0].plainText, 'en');
+  const jaChunks = suggestDeterministicClauseChunks(blk.jaSentences[0].plainText, 'ja');
+  assert.ok(enChunks.length >= 3);
+  assert.deepEqual(
+    jaChunks.map((c) => c.text),
+    ['チームが異常を検知した場合、', '対象ホストを隔離し、', 'ログを保全しなければならない。'],
+  );
+
+  // splitTokensByHighlights combines marker and clause states cleanly
+  const tokens = tokenizeInlineMarkup('Verify *anomaly* handling.');
+  const segs = splitTokensByHighlights(tokens, {
+    markers: [{ start: 0, end: 6 }],
+    pending: [{ start: 7, end: 14 }],
+    checked: [{ start: 15, end: 25 }],
+  });
+  assert.ok(segs.some((s) => s.marked && s.clauseState === 'none'));
+  assert.ok(segs.some((s) => s.type === 'em' && s.clauseState === 'pending'));
+  assert.ok(segs.some((s) => s.clauseState === 'checked'));
+
+  // Inline sentence edit fixes omission without breaking alignment, status, or moved clause text
+  blk.groups[0].status = 'verified';
+  blk = updateSentenceTextInBlock(
+    blk,
+    'ja',
+    jaId,
+    'チームが異常を検知した場合、直ちに対象ホストを隔離し、ログを保全しなければならない。',
+  );
+  assert.equal(blk.groups[0].status, 'verified');
+  assert.match(blk.jaRaw, /直ちに/);
+  assert.equal(blk.groups[0].clausePairs[0].jaSpan.start, 0);
+
+  // Remove and clear helpers
+  blk = removeClausePairInGroup(blk, gid, p1);
+  assert.equal(blk.groups[0].clausePairs.length, 0);
+  blk = addClausePairInGroup(blk, gid, {
+    enSpan: { sentenceId: enId, start: 0, end: 10, text: 'When teams' },
+  }).block;
+  blk = clearClausePairsInGroup(blk, gid);
+  assert.equal(blk.groups[0].clausePairs.length, 0);
+});
+

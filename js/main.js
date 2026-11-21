@@ -50,6 +50,10 @@ document.addEventListener('keydown', (e) => {
       store.cancelSplitSentence();
       return;
     }
+    if (store.state.editingSentenceTarget) {
+      store.cancelEditSentence();
+      return;
+    }
   }
 
   if (store.state.activeModal) return;
@@ -68,6 +72,12 @@ document.addEventListener('keydown', (e) => {
   if (keyLower === 'h') {
     e.preventDefault();
     workspace.markCurrentSelection({ fromStart: e.shiftKey });
+    return;
+  }
+
+  if (keyLower === 'c') {
+    e.preventDefault();
+    workspace.captureClauseFromSelection();
     return;
   }
 

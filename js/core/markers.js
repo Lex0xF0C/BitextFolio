@@ -229,3 +229,63 @@ export function splitTokensByMarkers(tokens, markers) {
 
   return out;
 }
+
+/**
+ * Splits inline markup tokens across manual markers and temporary clause-pair spans.
+ * @param {Array<{type: string, value: string}>} tokens
+ * @param {{markers?: Array<{start:number,end:number}>, pending?: Array<{start:number,end:number}>, checked?: Array<{start:number,end:number}>}} layers
+ * @returns {Array<{type: string, value: string, marked: boolean, clauseState: 'none'|'pending'|'checked'}>}
+ */
+export function splitTokensByHighlights(tokens, layers = {}) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return [];
+  const totalLen = tokens.reduce((acc, t) => acc + (t.value ? t.value.length : 0), 0);
+  const normMarkers = normalizeMarkerRanges(layers.markers || [], totalLen);
+  const normPending = normalizeMarkerRanges(layers.pending || [], totalLen);
+  const normChecked = normalizeMarkerRanges(layers.checked || [], totalLen);
+
+  if (normMarkers.length === 0 && normPending.length === 0 && normChecked.length === 0) {
+    return tokens.map((t) => ({ ...t, marked: false, clauseState: 'none' }));
+  }
+
+  const containsSlice = (ranges, a, b) => ranges.some((r) => r.start <= a && r.end >= b);
+
+  const out = [];
+  let cursor = 0;
+
+  for (const token of tokens) {
+    const text = token.value || '';
+    const tokenStart = cursor;
+    const tokenEnd = cursor + text.length;
+    cursor = tokenEnd;
+    if (text.length === 0) continue;
+
+    const bounds = new Set([tokenStart, tokenEnd]);
+    for (const list of [normMarkers, normPending, normChecked]) {
+      for (const r of list) {
+        if (r.start > tokenStart && r.start < tokenEnd) bounds.add(r.start);
+        if (r.end > tokenStart && r.end < tokenEnd) bounds.add(r.end);
+      }
+    }
+    const sorted = [...bounds].sort((a, b) => a - b);
+
+    for (let i = 0; i < sorted.length - 1; i += 1) {
+      const a = sorted[i];
+      const b = sorted[i + 1];
+      if (b <= a) continue;
+      const marked = containsSlice(normMarkers, a, b);
+      const clauseState = containsSlice(normChecked, a, b)
+        ? 'checked'
+        : containsSlice(normPending, a, b)
+          ? 'pending'
+          : 'none';
+      out.push({
+        type: token.type,
+        value: text.slice(a - tokenStart, b - tokenStart),
+        marked,
+        clauseState,
+      });
+    }
+  }
+
+  return out;
+}

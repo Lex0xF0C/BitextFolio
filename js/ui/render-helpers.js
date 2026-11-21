@@ -3,7 +3,7 @@
  * Zero innerHTML usage with untrusted text.
  */
 
-import { splitTokensByMarkers } from '../core/markers.js';
+import { splitTokensByHighlights } from '../core/markers.js';
 import { tokenizeInlineMarkup } from '../core/markup.js';
 
 export const STATUS_META = {
@@ -59,16 +59,26 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 /**
- * Safely renders inline emphasis/code tokens and optional marker highlights as DOM nodes.
+ * Safely renders inline emphasis/code tokens, manual markers, and temporary clause highlights as DOM nodes.
  */
-export function renderRichSentenceFragment(rawText, markers = []) {
+export function renderRichSentenceFragment(rawText, markers = [], clauseHighlights = null) {
   const frag = document.createDocumentFragment();
   const tokens = tokenizeInlineMarkup(rawText);
-  const segments = splitTokensByMarkers(tokens, markers);
+  const segments = splitTokensByHighlights(tokens, {
+    markers,
+    pending: clauseHighlights?.pending || [],
+    checked: clauseHighlights?.checked || [],
+  });
   for (const seg of segments) {
-    const innerNode = seg.marked
+    let innerNode = seg.marked
       ? el('mark', { className: 'sentence-marker', textContent: seg.value })
       : document.createTextNode(seg.value);
+
+    if (seg.clauseState === 'checked') {
+      innerNode = el('span', { className: 'clause-span is-checked' }, [innerNode]);
+    } else if (seg.clauseState === 'pending') {
+      innerNode = el('span', { className: 'clause-span is-pending' }, [innerNode]);
+    }
 
     if (seg.type === 'em') {
       frag.appendChild(el('em', {}, [innerNode]));
@@ -104,8 +114,10 @@ export function blockHasActiveHints(block, duplicateJaIndex = null, dismissedHin
 }
 
 export function blockHasMarkersOrTempNoOmission(block) {
-  const hasTemp = (block.groups || []).some((g) => Boolean(g.tempNoOmission));
-  if (hasTemp) return true;
+  const hasTempOrClauses = (block.groups || []).some(
+    (g) => Boolean(g.tempNoOmission) || (g.clausePairs || []).length > 0,
+  );
+  if (hasTempOrClauses) return true;
   return (
     (block.enSentences || []).some((s) => (s.markers || []).length > 0) ||
     (block.jaSentences || []).some((s) => (s.markers || []).length > 0)
