@@ -7,15 +7,16 @@
 import { computeDeterministicHash, stripInlineMarkup } from './markup.js';
 import { buildCharNgrams, jaccardSimilarity } from './tm.js';
 
-function normalizeForMatch(text) {
-  return stripInlineMarkup(String(text || ''))
+function normalizeForMatch(text, literalText = false) {
+  const raw = String(text || '');
+  const base = literalText ? raw : stripInlineMarkup(raw);
+  return base
     .normalize('NFKC')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function extractNumbers(text) {
-  const norm = normalizeForMatch(text);
+function extractNumbers(norm) {
   const rawMatches = norm.match(/\b\d+(?:[.,-]\d+)*(?:[a-zA-Z]\d+)?%?/g) || [];
   const tokens = [];
   for (const raw of rawMatches) {
@@ -26,8 +27,7 @@ function extractNumbers(text) {
   return [...new Set(tokens)];
 }
 
-function extractJaNumbers(jaText) {
-  const norm = normalizeForMatch(jaText);
+function extractJaNumbers(norm) {
   const results = [];
   const re = /\d+(?:[.,-]\d+)*(?:[a-zA-Z]\d+)?%?/g;
   let m;
@@ -52,16 +52,14 @@ function numberAppearsInText(numToken, targetNorm) {
   return false;
 }
 
-function extractUrlsAndIds(text) {
-  const norm = normalizeForMatch(text);
+function extractUrlsAndIds(norm) {
   const urls = norm.match(/https?:\/\/[^\s)>\]"'、。]+/gi) || [];
   const emails = norm.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || [];
   const cves = norm.match(/\bCVE-\d{4}-\d{4,}\b/gi) || [];
   return [...new Set([...urls, ...emails, ...cves])];
 }
 
-function extractAcronymsAndCodes(text) {
-  const norm = normalizeForMatch(text);
+function extractAcronymsAndCodes(norm) {
   const matches = norm.match(/\b(?:[A-Z]{2,}(?:-[A-Z0-9]+)*|[A-Z]+\d+[A-Z0-9-]*)\b/g) || [];
   // Filter out common non-content Roman numerals or single-word uppercase pronouns
   const ignore = new Set(['II', 'III', 'IV', 'VI', 'VII', 'VIII', 'IX', 'XI', 'XII']);
@@ -79,12 +77,16 @@ export function buildDuplicateJaIndex(blocks) {
     const enMap = new Map((blk.enSentences || []).map((s) => [s.id, s]));
     const jaMap = new Map((blk.jaSentences || []).map((s) => [s.id, s]));
     for (const grp of blk.groups || []) {
+      const jaLiteral = (grp.jaIds || []).some((id) => Boolean(jaMap.get(id)?.literalText));
+      const enLiteral = (grp.enIds || []).some((id) => Boolean(enMap.get(id)?.literalText));
       const jaPlain = normalizeForMatch(
         (grp.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' '),
+        jaLiteral,
       );
       if (jaPlain.length < 12) continue;
       const enPlain = normalizeForMatch(
         (grp.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' '),
+        enLiteral,
       );
       const list = index.get(jaPlain) || [];
       list.push({
@@ -92,7 +94,7 @@ export function buildDuplicateJaIndex(blocks) {
         blockId: blk.id,
         blockIndex: blk.index,
         enPlain,
-        enNgrams: buildCharNgrams(enPlain, 3),
+        enNgrams: buildCharNgrams(enPlain, 3, { literalText: enLiteral }),
       });
       index.set(jaPlain, list);
     }
@@ -110,12 +112,16 @@ export function detectGroupHints(
 ) {
   const enMap = new Map((block.enSentences || []).map((s) => [s.id, s]));
   const jaMap = new Map((block.jaSentences || []).map((s) => [s.id, s]));
+  const enLiteral = (group.enIds || []).some((id) => Boolean(enMap.get(id)?.literalText));
+  const jaLiteral = (group.jaIds || []).some((id) => Boolean(jaMap.get(id)?.literalText));
 
   const enPlain = normalizeForMatch(
     (group.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' '),
+    enLiteral,
   );
   const jaPlain = normalizeForMatch(
     (group.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' '),
+    jaLiteral,
   );
 
   const hints = [];
@@ -231,7 +237,7 @@ export function detectGroupHints(
     const dupIdx = duplicateJaIndex || (allBlocks ? buildDuplicateJaIndex(allBlocks) : null);
     if (dupIdx && jaPlain.length >= 12) {
       const occurrences = dupIdx.get(jaPlain) || [];
-      const enNgrams = buildCharNgrams(enPlain, 3);
+      const enNgrams = buildCharNgrams(enPlain, 3, { literalText: enLiteral });
       const differing = occurrences.filter(
         (occ) =>
           occ.groupId !== group.id &&

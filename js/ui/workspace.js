@@ -869,11 +869,15 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       for (const g of blk.groups) {
         const enPlain = g.enIds.map((id) => enMap.get(id)?.plainText || '').join(' ');
         const jaPlain = g.jaIds.map((id) => jaMap.get(id)?.plainText || '').join(' ');
+        const literalText =
+          g.enIds.some((id) => Boolean(enMap.get(id)?.literalText)) ||
+          g.jaIds.some((id) => Boolean(jaMap.get(id)?.literalText));
         const hasGlossaryIssue =
           store.state.glossary.length > 0 &&
           checkGroupGlossary(enPlain, jaPlain, store.state.glossary, store.state.jaNormOptions, {
             groupId: g.id,
             dismissedHints,
+            literalText,
           }).hasIssues;
         const hasHintIssue = detectGroupHints(g, blk, {
           duplicateJaIndex: dupIdx,
@@ -1003,7 +1007,9 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
     const clauseHighlights = collectSentenceClauseHighlights(group, lang, sentence.id);
     const textEl = el('p', { className: 'sentence-text' });
     textEl.appendChild(
-      renderRichSentenceFragment(sentence.rawText, sentence.markers, clauseHighlights, termSpans),
+      renderRichSentenceFragment(sentence.rawText, sentence.markers, clauseHighlights, termSpans, {
+        literalText: Boolean(sentence.literalText),
+      }),
     );
 
     itemEl.appendChild(el('div', { className: 'sentence-top-row' }, [handle, idBadge, textEl]));
@@ -1818,6 +1824,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
                   pair.enSpan.start,
                   pair.enSpan.end,
                   enSpansBySentenceId.get(enSentenceObj.id) || [],
+                  { literalText: Boolean(enSentenceObj.literalText) },
                 ),
               );
             } else {
@@ -1896,6 +1903,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
                   pair.jaSpan.start,
                   pair.jaSpan.end,
                   jaSpansBySentenceId.get(jaSentenceObj.id) || [],
+                  { literalText: Boolean(jaSentenceObj.literalText) },
                 ),
               );
             } else {
@@ -2120,12 +2128,15 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         ),
       );
 
+      const groupLiteralText =
+        (group.enIds || []).some((id) => Boolean(enMap.get(id)?.item?.literalText)) ||
+        (group.jaIds || []).some((id) => Boolean(jaMap.get(id)?.item?.literalText));
       const glossaryCheck = checkGroupGlossary(
         enPlain,
         jaPlain,
         store.state.glossary,
         store.state.jaNormOptions,
-        { groupId: group.id, dismissedHints },
+        { groupId: group.id, dismissedHints, literalText: groupLiteralText },
       );
 
       if (

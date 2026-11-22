@@ -99,9 +99,14 @@ export function renderRichSentenceFragment(
   markers = [],
   clauseHighlights = null,
   termSpans = [],
+  options = {},
 ) {
   const frag = document.createDocumentFragment();
-  const tokens = tokenizeInlineMarkup(rawText);
+  const tokens = options?.literalText
+    ? rawText
+      ? [{ type: 'text', value: String(rawText) }]
+      : []
+    : tokenizeInlineMarkup(rawText);
   const segments = splitTokensByHighlights(tokens, {
     markers,
     pending: clauseHighlights?.pending || [],
@@ -143,9 +148,14 @@ export function renderClauseFragment(
   spanStart = 0,
   spanEnd = 0,
   termSpans = [],
+  options = {},
 ) {
   const frag = document.createDocumentFragment();
-  const tokens = tokenizeInlineMarkup(rawText);
+  const tokens = options?.literalText
+    ? rawText
+      ? [{ type: 'text', value: String(rawText) }]
+      : []
+    : tokenizeInlineMarkup(rawText);
   const segments = sliceTokensByRange(tokens, markers, spanStart, spanEnd, termSpans);
   for (const seg of segments) {
     let innerNode = seg.marked
@@ -182,9 +192,13 @@ export function blockHasGlossaryIssues(
   return (block.groups || []).some((g) => {
     const enPlain = (g.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ');
     const jaPlain = (g.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
+    const literalText =
+      (g.enIds || []).some((id) => Boolean(enMap.get(id)?.literalText)) ||
+      (g.jaIds || []).some((id) => Boolean(jaMap.get(id)?.literalText));
     return checkGroupGlossary(enPlain, jaPlain, glossary, jaNormOptions, {
       groupId: g.id,
       dismissedHints,
+      literalText,
     }).hasIssues;
   });
 }

@@ -516,6 +516,11 @@ export function createAppStore() {
       showToast(
         `XLIFF 2.1「${saved.title}」を読み込みました（${summary.blocksCount}ブロック / ${summary.groupsCount}グループ）`,
       );
+      if (summary.droppedFeatures && summary.droppedFeatures.length > 0) {
+        showToast(
+          `注意（非可逆要素）: ${summary.droppedFeatures.join('、')} は BitextFolio 形式では保持されません`,
+        );
+      }
       notify();
     },
     async registerTermPair({

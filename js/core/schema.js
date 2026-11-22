@@ -268,14 +268,23 @@ export function validateExportPayload(rawPayload) {
 
 function normalizeSentenceV2(sentence) {
   const rawText = String(sentence.rawText || '');
+  const literalText = Boolean(sentence.literalText);
   const plainText =
-    typeof sentence.plainText === 'string' ? sentence.plainText : stripInlineMarkup(rawText);
-  return {
+    typeof sentence.plainText === 'string'
+      ? sentence.plainText
+      : literalText
+        ? rawText
+        : stripInlineMarkup(rawText);
+  const normalized = {
     ...sentence,
     rawText,
     plainText,
     markers: normalizeMarkerRanges(sentence.markers || [], plainText.length),
   };
+  if (literalText) {
+    normalized.literalText = true;
+  }
+  return normalized;
 }
 
 function normalizeGroupV2(group) {

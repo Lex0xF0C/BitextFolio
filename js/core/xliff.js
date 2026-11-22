@@ -38,17 +38,81 @@ const STATE_TO_STATUS = new Map([
   ['final', 'verified'],
 ]);
 
-function stripInvalidXmlChars(str) {
-  return String(str ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+function isInvalidXmlCodePoint(cp) {
+  if (cp === 0x09 || cp === 0x0a || cp === 0x0d) return false;
+  if (cp < 0x20) return true;
+  if (cp >= 0xd800 && cp <= 0xdfff) return true;
+  if (cp === 0xfffe || cp === 0xffff) return true;
+  return false;
 }
 
-function escapeXml(str) {
+function stripInvalidXmlChars(str) {
+  const s = String(str ?? '');
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        const cp = ((code - 0xd800) << 10) + (next - 0xdc00) + 0x10000;
+        if (!isInvalidXmlCodePoint(cp)) {
+          out += s[i] + s[i + 1];
+        }
+        i += 1;
+        continue;
+      }
+    }
+    if (!isInvalidXmlCodePoint(code)) {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+function escapeXmlTextOnly(str) {
   return stripInvalidXmlChars(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+/**
+ * Escapes XML content inside <source>/<target>, encoding XML-invalid code points
+ * as XLIFF 2.1 <cp hex="XXXX"/> elements (4.2.3.1).
+ */
+function escapeXliffInlineContent(str) {
+  const s = String(str ?? '');
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += s[i] + s[i + 1];
+        i += 1;
+        continue;
+      }
+    }
+    if (isInvalidXmlCodePoint(code)) {
+      const hex = code.toString(16).toUpperCase().padStart(4, '0');
+      out += `<cp hex="${hex}"/>`;
+    } else if (code === 0x26) {
+      out += '&amp;';
+    } else if (code === 0x3c) {
+      out += '&lt;';
+    } else if (code === 0x3e) {
+      out += '&gt;';
+    } else if (code === 0x22) {
+      out += '&quot;';
+    } else if (code === 0x27) {
+      out += '&apos;';
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
 }
 
 function toSafeXmlId(raw, fallback) {
@@ -63,26 +127,28 @@ function serializeSentenceWithMarkers(sentence, idPrefix) {
   const text =
     typeof sentence.plainText === 'string'
       ? sentence.plainText
-      : stripInlineMarkup(sentence.rawText || '');
+      : sentence.literalText
+        ? sentence.rawText || ''
+        : stripInlineMarkup(sentence.rawText || '');
   if (!text) return '';
 
   const markers = normalizeMarkerRanges(sentence.markers || [], text.length);
-  if (markers.length === 0) return escapeXml(text);
+  if (markers.length === 0) return escapeXliffInlineContent(text);
 
   let out = '';
   let cursor = 0;
   markers.forEach((m, idx) => {
     if (m.start > cursor) {
-      out += escapeXml(text.slice(cursor, m.start));
+      out += escapeXliffInlineContent(text.slice(cursor, m.start));
     }
     const mrkId = toSafeXmlId(`${idPrefix}_${idx + 1}`, `mrk_${idx + 1}`);
-    out += `<mrk id="${mrkId}" type="comment" value="bitextfolio:marker">${escapeXml(
+    out += `<mrk id="${mrkId}" type="bitextfolio:marker">${escapeXliffInlineContent(
       text.slice(m.start, m.end),
     )}</mrk>`;
     cursor = m.end;
   });
   if (cursor < text.length) {
-    out += escapeXml(text.slice(cursor));
+    out += escapeXliffInlineContent(text.slice(cursor));
   }
   return out;
 }
@@ -97,17 +163,35 @@ export function exportProjectToXliff21(project) {
     throw new Error('XLIFF 2.1 エクスポート対象のドキュメントが不正です');
   }
 
+  const hasAnyTarget = (project.blocks || []).some((block) => {
+    const jaMap = new Map((block.jaSentences || []).map((s) => [s.id, s]));
+    return (block.groups || []).some((group) =>
+      (group.jaIds || []).some((id) => {
+        const sent = jaMap.get(id);
+        if (!sent) return false;
+        const txt =
+          typeof sent.plainText === 'string'
+            ? sent.plainText
+            : sent.literalText
+              ? sent.rawText || ''
+              : stripInlineMarkup(sent.rawText || '');
+        return txt.length > 0;
+      }),
+    );
+  });
+
+  const trgLangAttr = hasAnyTarget ? ' trgLang="ja"' : '';
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    `<xliff xmlns="${XLIFF_21_NAMESPACE}" version="2.1" srcLang="en" trgLang="ja">`,
+    `<xliff xmlns="${XLIFF_21_NAMESPACE}" version="2.1" srcLang="en"${trgLangAttr}>`,
   ];
 
   const fileId = toSafeXmlId(project.id, 'f1');
-  const fileOrig = escapeXml(project.title || 'untitled');
-  lines.push(`  <file id="${fileId}" original="${fileOrig}">`);
+  const safeOriginalIri = encodeURIComponent(stripInvalidXmlChars(project.title || 'untitled'));
+  lines.push(`  <file id="${fileId}" original="${escapeXmlTextOnly(safeOriginalIri)}">`);
   lines.push('    <notes>');
   lines.push(
-    `      <note id="note_title" category="bitextfolio:title">${escapeXml(project.title || '')}</note>`,
+    `      <note id="note_title" category="bitextfolio:title">${escapeXmlTextOnly(project.title || '')}</note>`,
   );
   lines.push(
     `      <note id="note_schema" category="bitextfolio:schemaVersion">${project.schemaVersion || 2}</note>`,
@@ -127,17 +211,17 @@ export function exportProjectToXliff21(project) {
 
     (block.groups || []).forEach((group, gIdx) => {
       const unitId = toSafeXmlId(group.id, `${grpId}_u_${gIdx + 1}`);
-      lines.push(`      <unit id="${unitId}">`);
+      lines.push(`      <unit id="${unitId}" canResegment="no">`);
 
       const unitNotes = [];
       if (group.memo) {
         unitNotes.push(
-          `          <note id="${unitId}_n_memo" category="bitextfolio:memo">${escapeXml(group.memo)}</note>`,
+          `          <note id="${unitId}_n_memo" category="bitextfolio:memo">${escapeXmlTextOnly(group.memo)}</note>`,
         );
       }
       if (group.previousMemoNote) {
         unitNotes.push(
-          `          <note id="${unitId}_n_prev" category="bitextfolio:previousMemoNote">${escapeXml(group.previousMemoNote)}</note>`,
+          `          <note id="${unitId}_n_prev" category="bitextfolio:previousMemoNote">${escapeXmlTextOnly(group.previousMemoNote)}</note>`,
         );
       }
       if (group.tempNoOmission) {
@@ -154,14 +238,20 @@ export function exportProjectToXliff21(project) {
           `          <note id="${unitId}_n_align" category="bitextfolio:confirmedAlignment">false</note>`,
         );
       }
+      const enList = (group.enIds || []).map((id) => enMap.get(id)).filter(Boolean);
+      const jaList = (group.jaIds || []).map((id) => jaMap.get(id)).filter(Boolean);
+      if (enList.length !== jaList.length) {
+        unitNotes.push(
+          `          <note id="${unitId}_n_nm" category="bitextfolio:alignmentNote">${escapeXmlTextOnly(
+            `BitextFolio ${enList.length}:${jaList.length} alignment group: all segments in this <unit> correspond as one group (canResegment="no").`,
+          )}</note>`,
+        );
+      }
       if (unitNotes.length > 0) {
         lines.push('        <notes>');
         lines.push(...unitNotes);
         lines.push('        </notes>');
       }
-
-      const enList = (group.enIds || []).map((id) => enMap.get(id)).filter(Boolean);
-      const jaList = (group.jaIds || []).map((id) => jaMap.get(id)).filter(Boolean);
       const mapping = STATUS_TO_XLIFF.get(group.status) || STATUS_TO_XLIFF.get('unread');
       const segCount = Math.max(1, enList.length, jaList.length);
 
@@ -169,8 +259,10 @@ export function exportProjectToXliff21(project) {
         const enSent = enList[i] || null;
         const jaSent = jaList[i] || null;
         const segId = `${unitId}_s${i + 1}`;
+        // XLIFF 2.1 §4.3.1.31: state MUST be "initial" if <target> is absent
+        const segState = jaSent ? mapping.state : 'initial';
         lines.push(
-          `        <segment id="${segId}" state="${mapping.state}" subState="${mapping.subState}">`,
+          `        <segment id="${segId}" canResegment="no" state="${segState}" subState="${mapping.subState}">`,
         );
         if (enSent) {
           lines.push(
@@ -298,7 +390,6 @@ function parseXmlDocument(rawXml) {
       continue;
     }
 
-    // Parse opening or self-closing tag respecting quotes inside attributes
     let gtIdx = ltIdx + 1;
     let inQuote = null;
     while (gtIdx < src.length) {
@@ -359,17 +450,38 @@ function getChildElements(node, localName = null) {
   );
 }
 
-function extractTextAndMarkers(node) {
+function resolveXmlSpace(node, inheritedSpace = 'default') {
+  const attr = node?.attrs?.['xml:space'];
+  if (attr === 'preserve' || attr === 'default') return attr;
+  return inheritedSpace;
+}
+
+function extractTextAndMarkers(node, inheritedXmlSpace = 'default', lossTracker = null) {
   let text = '';
   const markers = [];
 
-  function walk(curr) {
+  function appendTextChunk(chunk, isPreserve) {
+    if (!chunk) return;
+    if (isPreserve) {
+      text += chunk;
+      return;
+    }
+    let collapsed = chunk.replace(/[\t\n\r ]+/g, ' ');
+    if (text.endsWith(' ') && collapsed.startsWith(' ')) {
+      collapsed = collapsed.slice(1);
+    }
+    text += collapsed;
+  }
+
+  function walk(curr, currentSpace) {
     if (!curr) return;
     if (curr.type === 'text') {
-      text += curr.text;
+      appendTextChunk(curr.text, currentSpace === 'preserve');
       return;
     }
     if (curr.type !== 'element') return;
+
+    const nextSpace = resolveXmlSpace(curr, currentSpace);
 
     if (curr.localName === 'cp' && curr.attrs.hex) {
       const code = Number.parseInt(curr.attrs.hex, 16);
@@ -379,13 +491,21 @@ function extractTextAndMarkers(node) {
       return;
     }
 
+    if (
+      lossTracker &&
+      ['ph', 'pc', 'sc', 'ec', 'sm', 'em'].includes(curr.localName)
+    ) {
+      lossTracker.inlineCodeCount += 1;
+    }
+
     const isMarkerEl =
       curr.localName === 'mrk' &&
-      (curr.attrs.value === 'bitextfolio:marker' || curr.attrs.type === 'bitextfolio:marker');
+      (curr.attrs.type === 'bitextfolio:marker' ||
+        (curr.attrs.type === 'comment' && curr.attrs.value === 'bitextfolio:marker'));
 
     const start = text.length;
     for (const child of curr.children || []) {
-      walk(child);
+      walk(child, nextSpace);
     }
     const end = text.length;
     if (isMarkerEl && end > start) {
@@ -393,9 +513,9 @@ function extractTextAndMarkers(node) {
     }
   }
 
-  walk(node);
-  // Trim leading/trailing whitespace that may arise from indentation while adjusting marker offsets
-  const leadMatch = /^\s+/.exec(text);
+  walk(node, resolveXmlSpace(node, inheritedXmlSpace));
+
+  const leadMatch = /^[\t\n\r ]+/.exec(text);
   const leadLen = leadMatch ? leadMatch[0].length : 0;
   const trimmed = text.trim();
   const adjustedMarkers = markers
@@ -411,8 +531,8 @@ function extractTextAndMarkers(node) {
   };
 }
 
-function extractPlainText(node) {
-  return extractTextAndMarkers(node).text;
+function extractPlainText(node, inheritedXmlSpace = 'preserve') {
+  return extractTextAndMarkers(node, inheritedXmlSpace).text;
 }
 
 function resolveUnitStatus(segmentMetaList, enCount, jaCount) {
@@ -438,38 +558,95 @@ function resolveUnitStatus(segmentMetaList, enCount, jaCount) {
   return 'read';
 }
 
-function collectGroupBlocksFromFile(fileNode) {
+function orderTargetEntries(targetEntries) {
+  if (targetEntries.length <= 1) return targetEntries.map((e) => e.item);
+  const hasExplicitOrder = targetEntries.some((e) => Number.isInteger(e.order) && e.order >= 1);
+  if (!hasExplicitOrder) return targetEntries.map((e) => e.item);
+
+  const slots = new Array(targetEntries.length).fill(null);
+  const unplaced = [];
+  for (const entry of targetEntries) {
+    if (Number.isInteger(entry.order) && entry.order >= 1) {
+      const idx = entry.order - 1;
+      if (idx < slots.length && slots[idx] === null) {
+        slots[idx] = entry.item;
+      } else {
+        unplaced.push(entry);
+      }
+    } else {
+      unplaced.push(entry);
+    }
+  }
+  // Fill remaining slots cleanly: ordered overflow sorted by order first, then unordered in document sequence
+  const orderedOverflow = unplaced
+    .filter((e) => Number.isInteger(e.order))
+    .sort((a, b) => a.order - b.order);
+  const unordered = unplaced.filter((e) => !Number.isInteger(e.order));
+  const queue = [...unordered, ...orderedOverflow];
+
+  for (let i = 0; i < slots.length; i += 1) {
+    if (slots[i] === null && queue.length > 0) {
+      slots[i] = queue.shift().item;
+    }
+  }
+  while (queue.length > 0) {
+    slots.push(queue.shift().item);
+  }
+  return slots.filter(Boolean);
+}
+
+function collectGroupBlocksFromFile(fileNode, fileId, fileXmlSpace, lossTracker) {
   const blocks = [];
   let looseUnits = [];
 
   function flushLooseUnits() {
     if (looseUnits.length > 0) {
-      blocks.push({ id: nextLocalId('blk'), units: looseUnits });
+      blocks.push({
+        id: nextLocalId('blk'),
+        fileId,
+        xmlSpace: fileXmlSpace,
+        units: looseUnits,
+      });
       looseUnits = [];
     }
   }
 
-  function walkGroup(groupNode) {
+  function walkGroup(groupNode, parentSpace) {
+    const groupSpace = resolveXmlSpace(groupNode, parentSpace);
+    for (const notesEl of getChildElements(groupNode, 'notes')) {
+      for (const noteEl of getChildElements(notesEl, 'note')) {
+        if (!(noteEl.attrs.category || '').startsWith('bitextfolio:')) {
+          lossTracker.containerNotesCount += 1;
+        }
+      }
+    }
     const directUnits = getChildElements(groupNode, 'unit');
     const nestedGroups = getChildElements(groupNode, 'group');
     if (directUnits.length > 0) {
       blocks.push({
-        id: groupNode.attrs.id || nextLocalId('blk'),
+        id: nextLocalId('blk'),
+        fileId,
+        xliffGroupId: groupNode.attrs.id || '',
+        xmlSpace: groupSpace,
         units: directUnits,
       });
     }
     for (const ng of nestedGroups) {
-      walkGroup(ng);
+      walkGroup(ng, groupSpace);
     }
   }
 
   for (const child of fileNode.children || []) {
     if (child.type !== 'element') continue;
-    if (child.localName === 'unit') {
+    if (child.localName === 'skeleton') {
+      lossTracker.skeletonCount += 1;
+    } else if (child.localName === 'unit') {
       looseUnits.push(child);
     } else if (child.localName === 'group') {
       flushLooseUnits();
-      walkGroup(child);
+      walkGroup(child, fileXmlSpace);
+    } else if (child.name.includes(':') && !child.name.startsWith('xml:')) {
+      lossTracker.moduleElementsCount += 1;
     }
   }
   flushLooseUnits();
@@ -477,17 +654,58 @@ function collectGroupBlocksFromFile(fileNode) {
   return blocks;
 }
 
+function verifyXliffNamespace(root) {
+  const prefix = root.name.includes(':') ? root.name.split(':')[0] : '';
+  const nsAttr = prefix ? `xmlns:${prefix}` : 'xmlns';
+  const declaredNs = root.attrs[nsAttr];
+  if (declaredNs !== XLIFF_21_NAMESPACE) {
+    throw new Error(
+      `XLIFF 2.0 / 2.1 の名前空間 (${XLIFF_21_NAMESPACE}) が一致しません（検出: ${declaredNs || '未指定'}）`,
+    );
+  }
+}
+
+function validateLanguageDirection(srcLang, trgLang) {
+  if (!srcLang) {
+    throw new Error('<xliff> に必須属性 srcLang がありません');
+  }
+  const srcBase = String(srcLang).trim().toLowerCase().split(/[-_]/)[0];
+  const trgBase = trgLang ? String(trgLang).trim().toLowerCase().split(/[-_]/)[0] : '';
+
+  if (srcBase === 'ja' && trgBase === 'en') {
+    throw new Error(
+      `言語方向が逆 (${srcLang} → ${trgLang}) の XLIFF です。BitextFolio は英語原文 → 日本語訳 (en → ja) のみ対応しています。`,
+    );
+  }
+  if (srcBase !== 'en' || (trgBase && trgBase !== 'ja')) {
+    throw new Error(
+      `未対応の言語ペアです（検出: ${srcLang} → ${trgLang || '未指定'}）。BitextFolio は en → ja のみ対応しています。`,
+    );
+  }
+}
+
+function decodeOriginalAttr(rawOriginal) {
+  if (!rawOriginal) return '';
+  try {
+    return decodeURIComponent(rawOriginal);
+  } catch {
+    return rawOriginal;
+  }
+}
+
 /**
  * Parses an OASIS XLIFF 2.0 / 2.1 document string into a BitextFolio DocumentProject (schemaVersion 2).
  * @param {string} xmlText
  * @param {{ defaultTitle?: string, abbreviations?: string[] }} [options]
- * @returns {{ project: object, summary: { blocksCount: number, groupsCount: number, enSentencesCount: number, jaSentencesCount: number, srcLang: string, trgLang: string } }}
+ * @returns {{ project: object, summary: { blocksCount: number, groupsCount: number, enSentencesCount: number, jaSentencesCount: number, srcLang: string, trgLang: string, droppedFeatures: string[] } }}
  */
 export function parseXliff21ToProject(xmlText, options = {}) {
   const root = parseXmlDocument(xmlText);
   if (root.localName !== 'xliff') {
     throw new Error(`ルート要素が <xliff> ではありません（検出: <${root.name}>）`);
   }
+  verifyXliffNamespace(root);
+
   const version = String(root.attrs.version || '').trim();
   if (!version.startsWith('2.')) {
     throw new Error(
@@ -495,35 +713,51 @@ export function parseXliff21ToProject(xmlText, options = {}) {
     );
   }
 
-  const srcLang = root.attrs.srcLang || 'en';
-  const trgLang = root.attrs.trgLang || 'ja';
+  const srcLang = root.attrs.srcLang || '';
+  const trgLang = root.attrs.trgLang || '';
+  validateLanguageDirection(srcLang, trgLang);
 
+  const rootSpace = resolveXmlSpace(root, 'default');
   const files = getChildElements(root, 'file');
   if (files.length === 0) {
     throw new Error('<xliff> 内に <file> 要素が見つかりません');
   }
 
+  const lossTracker = {
+    ignorableCount: 0,
+    skeletonCount: 0,
+    originalDataCount: 0,
+    inlineCodeCount: 0,
+    containerNotesCount: 0,
+    nonRoundtripAttrCount: 0,
+    moduleElementsCount: 0,
+  };
+
   let projectTitle = '';
   let splitInsideList = false;
   const rawBlockSpecs = [];
 
-  for (const fileNode of files) {
+  files.forEach((fileNode, fIdx) => {
+    const fileId = fileNode.attrs.id || `file_${fIdx + 1}`;
+    const fileSpace = resolveXmlSpace(fileNode, rootSpace);
     if (!projectTitle && fileNode.attrs.original) {
-      projectTitle = fileNode.attrs.original;
+      projectTitle = decodeOriginalAttr(fileNode.attrs.original);
     }
     for (const notesEl of getChildElements(fileNode, 'notes')) {
       for (const noteEl of getChildElements(notesEl, 'note')) {
         const cat = noteEl.attrs.category || '';
-        const text = extractPlainText(noteEl);
+        const text = extractPlainText(noteEl, 'preserve');
         if (cat === 'bitextfolio:title' && text) {
           projectTitle = text;
         } else if (cat === 'bitextfolio:splitInsideList' && text === 'true') {
           splitInsideList = true;
+        } else if (!cat.startsWith('bitextfolio:')) {
+          lossTracker.containerNotesCount += 1;
         }
       }
     }
-    rawBlockSpecs.push(...collectGroupBlocksFromFile(fileNode));
-  }
+    rawBlockSpecs.push(...collectGroupBlocksFromFile(fileNode, fileId, fileSpace, lossTracker));
+  });
 
   if (rawBlockSpecs.length === 0) {
     throw new Error('XLIFF 内に読み取り可能な <unit> 要素が見つかりません');
@@ -539,7 +773,27 @@ export function parseXliff21ToProject(xmlText, options = {}) {
     const groups = [];
 
     spec.units.forEach((unitNode, uIdx) => {
-      const unitId = unitNode.attrs.id || `${spec.id}_g_${uIdx + 1}_${nextLocalId('g')}`;
+      const unitSpace = resolveXmlSpace(unitNode, spec.xmlSpace);
+      const originalUnitId = unitNode.attrs.id || `u_${uIdx + 1}`;
+      // Always mint a fresh unique BitextFolio group ID to prevent collisions across <file> elements
+      const groupId = `${spec.id}_g_${uIdx + 1}_${nextLocalId('g')}`;
+
+      if (unitNode.attrs.translate === 'no') {
+        lossTracker.nonRoundtripAttrCount += 1;
+      }
+      if (getChildElements(unitNode, 'originalData').length > 0) {
+        lossTracker.originalDataCount += 1;
+      }
+      const ignorableCount = getChildElements(unitNode, 'ignorable').length;
+      if (ignorableCount > 0) {
+        lossTracker.ignorableCount += ignorableCount;
+      }
+      for (const child of unitNode.children || []) {
+        if (child.type === 'element' && child.name.includes(':') && !child.name.startsWith('xml:')) {
+          lossTracker.moduleElementsCount += 1;
+        }
+      }
+
       const memoLines = [];
       let previousMemoNote = '';
       let tempNoOmission = false;
@@ -548,7 +802,7 @@ export function parseXliff21ToProject(xmlText, options = {}) {
       for (const notesEl of getChildElements(unitNode, 'notes')) {
         for (const noteEl of getChildElements(notesEl, 'note')) {
           const cat = noteEl.attrs.category || '';
-          const noteText = extractPlainText(noteEl);
+          const noteText = extractPlainText(noteEl, 'preserve');
           if (!noteText) continue;
           if (cat === 'bitextfolio:memo') {
             memoLines.push(noteText);
@@ -558,17 +812,23 @@ export function parseXliff21ToProject(xmlText, options = {}) {
             tempNoOmission = noteText === 'true';
           } else if (cat === 'bitextfolio:confirmedAlignment') {
             explicitConfirmed = noteText === 'true';
+          } else if (cat === 'bitextfolio:alignmentNote') {
+            // Explanatory n:m note for external CAT tools; ignored on BitextFolio re-import
           } else if (!cat.startsWith('bitextfolio:')) {
+            if (noteEl.attrs.appliesTo || noteEl.attrs.priority) {
+              lossTracker.nonRoundtripAttrCount += 1;
+            }
             memoLines.push(cat ? `[${cat}] ${noteText}` : noteText);
           }
         }
       }
 
       const enIds = [];
-      const jaIds = [];
+      const targetEntries = [];
       const segmentMetaList = [];
 
       for (const segNode of getChildElements(unitNode, 'segment')) {
+        const segSpace = resolveXmlSpace(segNode, unitSpace);
         segmentMetaList.push({
           state: segNode.attrs.state || '',
           subState: segNode.attrs.subState || '',
@@ -578,24 +838,34 @@ export function parseXliff21ToProject(xmlText, options = {}) {
         const trgNode = getChildElements(segNode, 'target')[0] || null;
 
         if (srcNode) {
-          const { text, markers } = extractTextAndMarkers(srcNode);
+          const { text, markers } = extractTextAndMarkers(srcNode, segSpace, lossTracker);
           if (text) {
-            const item = makeSentenceItem(text, 'en', undefined, markers);
+            const item = makeSentenceItem(text, 'en', undefined, markers, { literalText: true });
             enSentences.push(item);
             enIds.push(item.id);
             totalEnSentences += 1;
           }
         }
         if (trgNode) {
-          const { text, markers } = extractTextAndMarkers(trgNode);
+          const { text, markers } = extractTextAndMarkers(trgNode, segSpace, lossTracker);
           if (text) {
-            const item = makeSentenceItem(text, 'ja', undefined, markers);
-            jaSentences.push(item);
-            jaIds.push(item.id);
-            totalJaSentences += 1;
+            const item = makeSentenceItem(text, 'ja', undefined, markers, { literalText: true });
+            const rawOrder = trgNode.attrs.order;
+            const parsedOrder = rawOrder !== undefined ? Number.parseInt(rawOrder, 10) : NaN;
+            targetEntries.push({
+              item,
+              order: Number.isInteger(parsedOrder) && parsedOrder >= 1 ? parsedOrder : null,
+            });
           }
         }
       }
+
+      const orderedJaItems = orderTargetEntries(targetEntries);
+      const jaIds = orderedJaItems.map((item) => {
+        jaSentences.push(item);
+        totalJaSentences += 1;
+        return item.id;
+      });
 
       const status = resolveUnitStatus(segmentMetaList, enIds.length, jaIds.length);
       const confirmedAlignment =
@@ -604,7 +874,9 @@ export function parseXliff21ToProject(xmlText, options = {}) {
           : enIds.length === 1 && jaIds.length === 1;
 
       groups.push({
-        id: unitId,
+        id: groupId,
+        xliffFileId: spec.fileId,
+        xliffUnitId: originalUnitId,
         enIds,
         jaIds,
         status,
@@ -641,6 +913,29 @@ export function parseXliff21ToProject(xmlText, options = {}) {
     });
   });
 
+  const droppedFeatures = [];
+  if (lossTracker.inlineCodeCount > 0) {
+    droppedFeatures.push(`インラインタグ (<ph>/<pc>/<sc>/<ec> 等 ${lossTracker.inlineCodeCount}件)`);
+  }
+  if (lossTracker.originalDataCount > 0) {
+    droppedFeatures.push(`<originalData> (${lossTracker.originalDataCount}件)`);
+  }
+  if (lossTracker.ignorableCount > 0) {
+    droppedFeatures.push(`<ignorable> (${lossTracker.ignorableCount}件)`);
+  }
+  if (lossTracker.skeletonCount > 0) {
+    droppedFeatures.push(`<skeleton> (${lossTracker.skeletonCount}件)`);
+  }
+  if (lossTracker.containerNotesCount > 0) {
+    droppedFeatures.push(`<file>/<group> レベルの外部 <note> (${lossTracker.containerNotesCount}件)`);
+  }
+  if (lossTracker.nonRoundtripAttrCount > 0) {
+    droppedFeatures.push(`translate/appliesTo/priority 等の属性 (${lossTracker.nonRoundtripAttrCount}件)`);
+  }
+  if (lossTracker.moduleElementsCount > 0) {
+    droppedFeatures.push(`拡張モジュール要素 (${lossTracker.moduleElementsCount}件)`);
+  }
+
   const now = new Date().toISOString();
   const project = migrateProject({
     id: nextLocalId('doc'),
@@ -667,6 +962,7 @@ export function parseXliff21ToProject(xmlText, options = {}) {
       jaSentencesCount: totalJaSentences,
       srcLang,
       trgLang,
+      droppedFeatures,
     },
   };
 }

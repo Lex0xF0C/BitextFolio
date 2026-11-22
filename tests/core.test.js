@@ -1178,9 +1178,9 @@ test('extractTermCandidates supports up to 7-grams, >40 maxResults, minN filteri
   assert.ok(overForty.length > 40);
 });
 
-test('XLIFF 2.1 export/import preserves n:m alignment groups, states, notes, markers, and XML escaping', () => {
+test('XLIFF 2.1 export/import preserves n:m alignment groups, states, notes, markers, <cp>, IRI original, and conditional trgLang', () => {
   let blk0 = buildAlignmentBlock(
-    'Alpha & Beta <check>.',
+    'Alpha & Beta <check>\u0003.',
     'アルファ＆ベータの確認。',
     0,
   );
@@ -1203,7 +1203,7 @@ test('XLIFF 2.1 export/import preserves n:m alignment groups, states, notes, mar
   blk1 = moveSentenceToGroup(blk1, 'en', blk1.enSentences[1].id, blk1.groups[0].id);
   blk1.groups[0] = { ...blk1.groups[0], status: 'needs_review', memo: '2対1の確認' };
   const thirdEnGroup = blk1.groups.find((g) => g.enIds.includes(blk1.enSentences[2].id));
-  if (thirdEnGroup) thirdEnGroup.status = 'unread';
+  if (thirdEnGroup) thirdEnGroup.status = 'verified';
   const unmatchedJaGroup = blk1.groups.find((g) => g.enIds.length === 0 && g.jaIds.length === 1);
   if (unmatchedJaGroup) unmatchedJaGroup.status = 'read';
 
@@ -1217,71 +1217,165 @@ test('XLIFF 2.1 export/import preserves n:m alignment groups, states, notes, mar
   const xliff = exportProjectToXliff21(project);
   assert.ok(xliff.includes(`xmlns="${XLIFF_21_NAMESPACE}"`));
   assert.ok(xliff.includes('version="2.1"'));
-  assert.ok(xliff.includes('</mrk> &amp; Beta &lt;check&gt;.'));
+  assert.ok(xliff.includes('trgLang="ja"'));
+  // #5: original must be IRI-safe (no raw '<' or spaces)
+  assert.ok(!/original="[^"]*[< ]/.test(xliff));
+  // #4: custom annotation type without comment value
+  assert.ok(xliff.includes('type="bitextfolio:marker"'));
+  assert.ok(!xliff.includes('value="bitextfolio:marker"'));
+  // #3: invalid XML control character encoded as <cp hex="0003"/>
+  assert.ok(xliff.includes('</mrk> &amp; Beta &lt;check&gt;<cp hex="0003"/>.'));
+  // #2: canResegment="no" and Option B explanatory note on n:m groups (without polluting memo on round-trip)
+  assert.ok(xliff.includes('canResegment="no"'));
+  assert.ok(xliff.includes('category="bitextfolio:alignmentNote"'));
+  assert.ok(xliff.includes('BitextFolio 2:1 alignment group'));
+  // #1: verified segment WITH target uses state="final"; segment WITHOUT target MUST use state="initial"
   assert.ok(xliff.includes('state="final" subState="bitextfolio:verified"'));
-  assert.ok(xliff.includes('state="translated" subState="bitextfolio:needs_review"'));
-  assert.ok(xliff.includes('<mrk id='));
-  assert.ok(xliff.includes('value="bitextfolio:marker"'));
+  assert.ok(xliff.includes('state="initial" subState="bitextfolio:verified"'));
+  assert.ok(xliff.includes('state="initial" subState="bitextfolio:needs_review"'));
 
   const { project: imported, summary } = parseXliff21ToProject(xliff);
   assert.equal(imported.schemaVersion, CURRENT_SCHEMA_VERSION);
   assert.equal(imported.title, 'XLIFF テスト <v2.1>');
   assert.equal(summary.blocksCount, 2);
-  assert.equal(imported.blocks[0].enSentences[0].plainText, 'Alpha & Beta <check>.');
+  assert.equal(imported.blocks[0].enSentences[0].plainText, 'Alpha & Beta <check>\u0003.');
+  assert.equal(imported.blocks[0].enSentences[0].literalText, true);
   assert.deepEqual(imported.blocks[0].enSentences[0].markers, [{ start: 0, end: 5 }]);
   assert.equal(imported.blocks[0].groups[0].status, 'verified');
   assert.equal(imported.blocks[0].groups[0].memo, '確定メモ\n2行目');
   assert.equal(imported.blocks[0].groups[0].tempNoOmission, true);
 
-  // Verify 2:1, 1:0, and 0:1 groups survived round-trip
+  // Verify 2:1, 1:0 (still verified via subState), and 0:1 groups survived round-trip without alignmentNote leaking into memo
   const impGrp2to1 = imported.blocks[1].groups[0];
   assert.equal(impGrp2to1.enIds.length, 2);
   assert.equal(impGrp2to1.jaIds.length, 1);
   assert.equal(impGrp2to1.status, 'needs_review');
   assert.equal(impGrp2to1.memo, '2対1の確認');
-  assert.ok(imported.blocks[1].groups.some((g) => g.enIds.length === 1 && g.jaIds.length === 0));
-  assert.ok(imported.blocks[1].groups.some((g) => g.enIds.length === 0 && g.jaIds.length === 1 && g.status === 'read'));
+  assert.ok(!summary.droppedFeatures.some((f) => f.includes('alignmentNote')));
+  assert.ok(
+    imported.blocks[1].groups.some(
+      (g) => g.enIds.length === 1 && g.jaIds.length === 0 && g.status === 'verified',
+    ),
+  );
+  assert.ok(
+    imported.blocks[1].groups.some(
+      (g) => g.enIds.length === 0 && g.jaIds.length === 1 && g.status === 'read',
+    ),
+  );
+
+  // #6: English-only document without targets must omit trgLang
+  const enOnlyBlocks = parseDocumentBlocks('Only source sentence.', { inputMode: 'english_only' });
+  const enOnlyXliff = exportProjectToXliff21({
+    schemaVersion: 2,
+    id: 'doc_en_only',
+    title: 'EN only',
+    blocks: enOnlyBlocks,
+  });
+  assert.equal(enOnlyXliff.includes('trgLang='), false);
 });
 
-test('XLIFF 2.1 importer handles external CAT files, inline tags, P1 non-auto-verify, and rejects XXE/XLIFF 1.2', () => {
+test('XLIFF 2.1 importer handles CAT files, target order, xml:space, multi-file unit ID collision, lang/ns checks, literalText, and lossy summary', () => {
   const catXliff = `<?xml version="1.0" encoding="UTF-8"?>
-<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="ja">
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en-US" trgLang="ja-JP">
   <file id="f1" original="cat_sample.txt">
-    <unit id="u1">
+    <notes><note category="context">File level note</note></notes>
+    <unit id="1">
       <notes>
         <note category="reviewer">Check terminology</note>
       </notes>
       <segment id="s1" state="reviewed">
-        <source>Use <pc id="1">strong</pc> passwords<ph id="2"/>.</source>
-        <target>強力なパスワードを使用してください。</target>
+        <source>
+          Use <pc id="1">strong</pc>
+          passwords<ph id="2"/>.
+        </source>
+        <target order="2">後半の訳。</target>
+      </segment>
+      <segment id="s2" state="reviewed">
+        <source xml:space="preserve">Keep  spaces.</source>
+        <target order="1">前半の訳。</target>
       </segment>
       <ignorable><source> </source></ignorable>
     </unit>
-    <unit id="u2">
-      <segment id="s2" state="initial">
-        <source>Pending item.</source>
+  </file>
+  <file id="f2" original="second.txt">
+    <unit id="1">
+      <segment id="s1" state="final">
+        <source>Check <mrk id="m1" type="bitextfolio:marker">foo_bar_baz</mrk> and *literal*.</source>
+        <target>foo_bar_baz と *文字列* を確認。</target>
       </segment>
     </unit>
   </file>
 </xliff>`;
 
-  const { project } = parseXliff21ToProject(catXliff);
+  const { project, summary } = parseXliff21ToProject(catXliff);
   assert.equal(project.title, 'cat_sample.txt');
-  assert.equal(project.blocks.length, 1);
-  assert.equal(project.blocks[0].groups.length, 2);
+  assert.equal(project.blocks.length, 2);
+  // #10: xml:space="default" collapses indentation; xml:space="preserve" keeps double spaces
   assert.equal(project.blocks[0].enSentences[0].plainText, 'Use strong passwords.');
+  assert.equal(project.blocks[0].enSentences[1].plainText, 'Keep  spaces.');
+  // #7: <target order="2"> / <target order="1"> reordered JA sentences cleanly
+  assert.equal(project.blocks[0].jaSentences[0].plainText, '前半の訳。');
+  assert.equal(project.blocks[0].jaSentences[1].plainText, '後半の訳。');
   assert.equal(project.blocks[0].groups[0].memo, '[reviewer] Check terminology');
-  // P1: external state="reviewed" maps to human-unconfirmed 'read', NOT 'verified'
+  // external state="reviewed" maps to 'read'; state="final" maps to 'verified' per owner confirmation
   assert.equal(project.blocks[0].groups[0].status, 'read');
-  assert.equal(project.blocks[0].groups[1].status, 'unread');
+  assert.equal(project.blocks[1].groups[0].status, 'verified');
+  // #8: unit id="1" in f1 and f2 get distinct BitextFolio group IDs while keeping provenance
+  assert.notEqual(project.blocks[0].groups[0].id, project.blocks[1].groups[0].id);
+  assert.equal(project.blocks[0].groups[0].xliffFileId, 'f1');
+  assert.equal(project.blocks[0].groups[0].xliffUnitId, '1');
+  assert.equal(project.blocks[1].groups[0].xliffFileId, 'f2');
+  assert.equal(project.blocks[1].groups[0].xliffUnitId, '1');
+  // (b) literalText preserves snake_case underscores and literal asterisks without offset skew
+  const litEn = project.blocks[1].enSentences[0];
+  const litJa = project.blocks[1].jaSentences[0];
+  assert.equal(litEn.literalText, true);
+  assert.equal(litEn.plainText, 'Check foo_bar_baz and *literal*.');
+  assert.deepEqual(litEn.markers, [{ start: 6, end: 17 }]);
+  assert.equal(litJa.plainText, 'foo_bar_baz と *文字列* を確認。');
+  // Splitting a literalText sentence preserves literalText and underscores/asterisks
+  const splitLitBlk = splitSentenceInBlock(project.blocks[1], 'en', litEn.id, 18);
+  assert.equal(splitLitBlk.enSentences[0].literalText, true);
+  assert.equal(splitLitBlk.enSentences[0].plainText, 'Check foo_bar_baz');
+  assert.equal(splitLitBlk.enSentences[1].literalText, true);
+  assert.equal(splitLitBlk.enSentences[1].plainText, 'and *literal*.');
+  // Glossary & hints respect literalText (no stripping of _bar_ or *文字列*)
+  const gCheckLit = checkGroupGlossary(
+    litEn.plainText,
+    litJa.plainText,
+    [{ id: 'g_snake', enHeadword: 'foo_bar_baz', jaAccepted: ['foo_bar_baz'], jaDeprecated: [] }],
+    undefined,
+    { literalText: true },
+  );
+  assert.equal(gCheckLit.matchedOk.length, 1);
+  assert.equal(gCheckLit.hasIssues, false);
+  const hCheckLit = detectGroupHints(project.blocks[1].groups[0], project.blocks[1]);
+  assert.equal(hCheckLit.hasActiveHints, false);
+  // #11: lossy summary notifies dropped inline codes, <ignorable>, and file-level notes
+  assert.ok(summary.droppedFeatures.some((f) => f.includes('インラインタグ')));
+  assert.ok(summary.droppedFeatures.some((f) => f.includes('<ignorable>')));
+  assert.ok(summary.droppedFeatures.some((f) => f.includes('<file>/<group>')));
 
+  // #9 & security rejections
   assert.throws(
-    () => parseXliff21ToProject('<!DOCTYPE xliff><xliff version="2.1"><file id="1"><unit id="u"><segment><source>a</source></segment></unit></file></xliff>'),
+    () => parseXliff21ToProject('<!DOCTYPE xliff><xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.1" srcLang="en"><file id="1"><unit id="u"><segment><source>a</source></segment></unit></file></xliff>'),
     /DOCTYPE/,
   );
   assert.throws(
-    () => parseXliff21ToProject('<xliff version="1.2"><file original="a"><body><trans-unit id="1"><source>a</source></trans-unit></body></file></xliff>'),
+    () => parseXliff21ToProject('<xliff version="2.1" srcLang="en"><file id="1"><unit id="u"><segment><source>a</source></segment></unit></file></xliff>'),
+    /名前空間/,
+  );
+  assert.throws(
+    () => parseXliff21ToProject('<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="1.2" srcLang="en"><file original="a"><body><trans-unit id="1"><source>a</source></trans-unit></body></file></xliff>'),
     /XLIFF 2\.0 \/ 2\.1/,
+  );
+  assert.throws(
+    () => parseXliff21ToProject('<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.1" srcLang="ja" trgLang="en"><file id="1"><unit id="u"><segment><source>a</source></segment></unit></file></xliff>'),
+    /言語方向が逆/,
+  );
+  assert.throws(
+    () => parseXliff21ToProject('<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.1" srcLang="de" trgLang="fr"><file id="1"><unit id="u"><segment><source>a</source></segment></unit></file></xliff>'),
+    /未対応の言語ペア/,
   );
 });
 

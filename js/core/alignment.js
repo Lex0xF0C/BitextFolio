@@ -33,15 +33,20 @@ export function nextLocalId(prefix) {
  * @param {'en'|'ja'} lang
  * @param {string} [id]
  */
-export function makeSentenceItem(rawText, lang, id, markers = []) {
+export function makeSentenceItem(rawText, lang, id, markers = [], options = {}) {
   const clean = String(rawText || '').trim();
-  const plainText = stripInlineMarkup(clean);
-  return {
+  const literalText = Boolean(options?.literalText);
+  const plainText = literalText ? clean : stripInlineMarkup(clean);
+  const item = {
     id: id || nextLocalId(lang),
     rawText: clean,
     plainText,
     markers: normalizeMarkerRanges(markers, plainText.length),
   };
+  if (literalText) {
+    item.literalText = true;
+  }
+  return item;
 }
 
 /**
@@ -231,8 +236,9 @@ export function splitSentenceInBlock(block, lang, sentenceId, splitOffset) {
   const rightRaw = target.rawText.slice(offset).trim();
   if (!leftRaw || !rightRaw) return block;
 
-  const leftPlainLen = stripInlineMarkup(leftRaw).length;
-  const rightPlainLen = stripInlineMarkup(rightRaw).length;
+  const literalText = Boolean(target.literalText);
+  const leftPlainLen = literalText ? leftRaw.length : stripInlineMarkup(leftRaw).length;
+  const rightPlainLen = literalText ? rightRaw.length : stripInlineMarkup(rightRaw).length;
   const { leftMarkers, rightMarkers } = remapMarkersOnSplit(
     target.markers,
     target.plainText.length,
@@ -240,8 +246,8 @@ export function splitSentenceInBlock(block, lang, sentenceId, splitOffset) {
     rightPlainLen,
   );
 
-  const leftItem = makeSentenceItem(leftRaw, lang, target.id, leftMarkers);
-  const rightItem = makeSentenceItem(rightRaw, lang, undefined, rightMarkers);
+  const leftItem = makeSentenceItem(leftRaw, lang, target.id, leftMarkers, { literalText });
+  const rightItem = makeSentenceItem(rightRaw, lang, undefined, rightMarkers, { literalText });
 
   const nextSentences = [
     ...sentences.slice(0, idx),
@@ -286,7 +292,8 @@ export function mergeSentenceWithNextInBlock(block, lang, sentenceId) {
   const next = sentences[idx + 1];
   const joiner = lang === 'en' ? ' ' : '';
   const mergedRaw = `${current.rawText}${joiner}${next.rawText}`.trim();
-  const mergedPlainLen = stripInlineMarkup(mergedRaw).length;
+  const literalText = Boolean(current.literalText || next.literalText);
+  const mergedPlainLen = literalText ? mergedRaw.length : stripInlineMarkup(mergedRaw).length;
   const mergedMarkers = mergeMarkerLists(
     current.markers,
     next.markers,
@@ -294,7 +301,7 @@ export function mergeSentenceWithNextInBlock(block, lang, sentenceId) {
     mergedPlainLen,
     current.plainText.length,
   );
-  const mergedItem = makeSentenceItem(mergedRaw, lang, current.id, mergedMarkers);
+  const mergedItem = makeSentenceItem(mergedRaw, lang, current.id, mergedMarkers, { literalText });
 
   const nextSentences = [
     ...sentences.slice(0, idx),

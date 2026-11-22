@@ -25,8 +25,10 @@ const EN_STOP_WORDS = new Set([
  * @param {number} [n=3]
  * @returns {string[]}
  */
-export function buildCharNgrams(text, n = 3) {
-  const norm = stripInlineMarkup(String(text || ''))
+export function buildCharNgrams(text, n = 3, options = {}) {
+  const raw = String(text || '');
+  const base = options?.literalText ? raw : stripInlineMarkup(raw);
+  const norm = base
     .normalize('NFKC')
     .toLowerCase()
     .replace(/\s+/g, ' ')
@@ -187,13 +189,15 @@ export function exportTmAsTmx(tmRecords) {
   return [...header, ...body, '  </body>', '</tmx>', ''].join('\n');
 }
 
-function extractEnglishTokens(text) {
-  const matches = stripInlineMarkup(text || '').match(/[A-Za-z][A-Za-z0-9'-]*/g);
+function extractEnglishTokens(text, literalText = false) {
+  const base = literalText ? String(text || '') : stripInlineMarkup(text || '');
+  const matches = base.match(/[A-Za-z][A-Za-z0-9'-]*/g);
   return matches || [];
 }
 
-export function extractJapaneseCandidateTerms(jaPlain) {
-  const clean = stripInlineMarkup(jaPlain || '').normalize('NFKC');
+export function extractJapaneseCandidateTerms(jaPlain, literalText = false) {
+  const base = literalText ? String(jaPlain || '') : stripInlineMarkup(jaPlain || '');
+  const clean = base.normalize('NFKC');
   const terms = new Set();
   // Mixed katakana + kanji compounds (e.g., インシデント対応, セキュリティ要件)
   const mixed = clean.match(/[\u30A1-\u30F6ー\u4E00-\u9FFF]{2,}/g) || [];
@@ -229,16 +233,17 @@ export function extractTermCandidates(
     const jaMap = new Map((blk.jaSentences || []).map((s) => [s.id, s]));
 
     for (const grp of blk.groups || []) {
-      const enTexts = (grp.enIds || [])
-        .map((id) => enMap.get(id)?.plainText || '')
-        .filter((t) => t.trim().length > 0);
-      if (enTexts.length === 0) continue;
+      const enItems = (grp.enIds || [])
+        .map((id) => enMap.get(id))
+        .filter((s) => s && String(s.plainText || '').trim().length > 0);
+      if (enItems.length === 0) continue;
 
       const jaPlain = (grp.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
+      const jaLiteral = (grp.jaIds || []).some((id) => Boolean(jaMap.get(id)?.literalText));
       const seenInGroup = new Set();
 
-      for (const sentenceText of enTexts) {
-        const tokens = extractEnglishTokens(sentenceText);
+      for (const sent of enItems) {
+        const tokens = extractEnglishTokens(sent.plainText, Boolean(sent.literalText));
         for (let len = safeMinN; len <= safeMaxN; len += 1) {
           for (let i = 0; i <= tokens.length - len; i += 1) {
             const slice = tokens.slice(i, i + len);
@@ -260,7 +265,7 @@ export function extractTermCandidates(
             }
             rec.count += 1;
             rec.displayCounts.set(rawPhrase, (rec.displayCounts.get(rawPhrase) || 0) + 1);
-            rec.groups.push({ groupId: grp.id, blockId: blk.id, jaPlain });
+            rec.groups.push({ groupId: grp.id, blockId: blk.id, jaPlain, jaLiteral });
           }
         }
       }
@@ -308,10 +313,11 @@ export function extractTermCandidates(
   return topCandidates.map((cand) => {
     const jaCounts = new Map();
     for (const g of cand.groups) {
-      let jaTerms = jaTermsCache.get(g.jaPlain);
+      const cacheKey = `${g.jaLiteral ? 'L' : 'M'}:${g.jaPlain}`;
+      let jaTerms = jaTermsCache.get(cacheKey);
       if (!jaTerms) {
-        jaTerms = extractJapaneseCandidateTerms(g.jaPlain);
-        jaTermsCache.set(g.jaPlain, jaTerms);
+        jaTerms = extractJapaneseCandidateTerms(g.jaPlain, Boolean(g.jaLiteral));
+        jaTermsCache.set(cacheKey, jaTerms);
       }
       for (const jt of jaTerms) {
         jaCounts.set(jt, (jaCounts.get(jt) || 0) + 1);

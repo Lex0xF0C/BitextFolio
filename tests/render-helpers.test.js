@@ -1,11 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { el } from '../js/ui/render-helpers.js';
+import {
+  el,
+  renderClauseFragment,
+  renderRichSentenceFragment,
+} from '../js/ui/render-helpers.js';
 
 function withMockDocument(fn) {
   const prevDocument = globalThis.document;
   globalThis.document = {
+    createDocumentFragment() {
+      const children = [];
+      return {
+        nodeType: 11,
+        children,
+        appendChild(child) {
+          children.push(child);
+          return child;
+        },
+      };
+    },
     createElement(tag) {
       const attrs = new Map();
       const listeners = new Map();
@@ -75,5 +90,27 @@ test('el() assigns .value property directly for textarea, input, and select elem
     ]);
     assert.equal(sel.value, 'b');
     assert.equal(sel.children[1].value, 'b');
+  });
+});
+
+test('renderRichSentenceFragment and renderClauseFragment preserve literal asterisks and underscores when literalText is true', () => {
+  withMockDocument(() => {
+    const raw = 'Use foo_bar_baz and *literal*.';
+    // Marker covers "foo_bar_baz" [4..15]
+    const frag = renderRichSentenceFragment(raw, [{ start: 4, end: 15 }], null, [], {
+      literalText: true,
+    });
+    assert.equal(frag.children.length, 3);
+    assert.equal(frag.children[0].textContent, 'Use ');
+    assert.equal(frag.children[1].tagName, 'MARK');
+    assert.equal(frag.children[1].textContent, 'foo_bar_baz');
+    assert.equal(frag.children[2].textContent, ' and *literal*.');
+
+    const clauseFrag = renderClauseFragment(raw, [{ start: 4, end: 15 }], 4, 29, [], {
+      literalText: true,
+    });
+    assert.equal(clauseFrag.children[0].tagName, 'MARK');
+    assert.equal(clauseFrag.children[0].textContent, 'foo_bar_baz');
+    assert.equal(clauseFrag.children[1].textContent, ' and *literal*');
   });
 });

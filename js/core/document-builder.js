@@ -44,17 +44,25 @@ help external reporters and vendors align on remediation milestones.
 - インシデント発生前に、対応基準（例：NIST SP 800-61r3、第2.0版）を整備する。
 - 緩和策の指標（エラー率0.5%の閾値など）およびアドバイザリ公開予定をUTCで記録する。`;
 
+function blockUsesLiteralText(block) {
+  return (
+    (block?.enSentences || []).some((s) => Boolean(s?.literalText)) ||
+    (block?.jaSentences || []).some((s) => Boolean(s?.literalText))
+  );
+}
+
 /**
  * Builds an AlignmentBlock from raw EN and JA strings.
  */
 export function buildAlignmentBlock(enRaw, jaRaw, index, options = {}) {
   const abbreviations = options.abbreviations || DEFAULT_ABBREVIATIONS;
   const splitInsideList = Boolean(options.splitInsideList);
+  const literalText = Boolean(options.literalText);
   const enList = splitEnglishSentences(enRaw, { abbreviations, splitInsideList }).map((s) =>
-    makeSentenceItem(s, 'en'),
+    makeSentenceItem(s, 'en', undefined, [], { literalText }),
   );
   const jaList = splitJapaneseSentences(jaRaw, { splitInsideList }).map((s) =>
-    makeSentenceItem(s, 'ja'),
+    makeSentenceItem(s, 'ja', undefined, [], { literalText }),
   );
   const blockId = options.id || nextLocalId('blk');
   const hashes = buildBlockHashes(enRaw, jaRaw);
@@ -91,6 +99,7 @@ export function parseDocumentBlocks(rawText, options = {}) {
     buildAlignmentBlock(pair.enRaw, pair.jaRaw, idx, {
       abbreviations: options.abbreviations,
       splitInsideList: Boolean(options.splitInsideList),
+      literalText: Boolean(options.literalText),
       enLang: pair.enLang,
       jaLang: pair.jaLang,
       enConfidence: pair.enConfidence,
@@ -110,8 +119,10 @@ export function updateBlockJapaneseText(block, newJaRaw, options = {}) {
     options.splitInsideList !== undefined
       ? Boolean(options.splitInsideList)
       : Boolean(block.splitInsideList);
+  const literalText =
+    options.literalText !== undefined ? Boolean(options.literalText) : blockUsesLiteralText(block);
   const jaList = splitJapaneseSentences(cleanJa, { splitInsideList }).map((s) =>
-    makeSentenceItem(s, 'ja'),
+    makeSentenceItem(s, 'ja', undefined, [], { literalText }),
   );
   const hashes = buildBlockHashes(block.enRaw, cleanJa);
   const groups = createInitialGroups(block.enSentences, jaList, block.id);
@@ -159,11 +170,13 @@ export function insertTextIntoGroup(
       ? Boolean(options.splitInsideList)
       : Boolean(block.splitInsideList);
 
+  const literalText =
+    options.literalText !== undefined ? Boolean(options.literalText) : blockUsesLiteralText(block);
   const newItems = (
     lang === 'en'
       ? splitEnglishSentences(clean, { abbreviations, splitInsideList })
       : splitJapaneseSentences(clean, { splitInsideList })
-  ).map((s) => makeSentenceItem(s, lang));
+  ).map((s) => makeSentenceItem(s, lang, undefined, [], { literalText }));
 
   if (newItems.length === 0) return block;
 
@@ -250,7 +263,7 @@ export function updateSentenceTextInBlock(block, lang, sentenceId, newRawText) {
   const nextSentences = sentences.map((s) => {
     if (s.id !== sentenceId) return s;
     changed = true;
-    newPlain = stripInlineMarkup(clean);
+    newPlain = s.literalText ? clean : stripInlineMarkup(clean);
     return {
       ...s,
       rawText: clean,
@@ -357,6 +370,7 @@ export function swapBlockSides(block, abbreviations, options = {}) {
     id: block.id,
     abbreviations,
     splitInsideList,
+    literalText: blockUsesLiteralText(block),
     warnings: structural,
   });
 }
@@ -384,6 +398,7 @@ export function mergeWithNextBlock(blocks, blockIndex, abbreviations, options = 
   const mergedBlock = buildAlignmentBlock(mergedEn, mergedJa, blockIndex, {
     abbreviations,
     splitInsideList,
+    literalText: blockUsesLiteralText(curr) || blockUsesLiteralText(next),
     warnings: [],
   });
 
@@ -528,11 +543,13 @@ export function realignBlockWithHints(block, abbreviations, useHintDp = true, op
     options.splitInsideList !== undefined
       ? Boolean(options.splitInsideList)
       : Boolean(block.splitInsideList);
+  const literalText =
+    options.literalText !== undefined ? Boolean(options.literalText) : blockUsesLiteralText(block);
   const enList = splitEnglishSentences(block.enRaw, { abbreviations, splitInsideList }).map((s) =>
-    makeSentenceItem(s, 'en'),
+    makeSentenceItem(s, 'en', undefined, [], { literalText }),
   );
   const jaList = splitJapaneseSentences(block.jaRaw, { splitInsideList }).map((s) =>
-    makeSentenceItem(s, 'ja'),
+    makeSentenceItem(s, 'ja', undefined, [], { literalText }),
   );
   const groups = useHintDp
     ? suggestHintedGroups(enList, jaList, block.id)
@@ -606,9 +623,13 @@ export function computeProjectStats(
       if (glossaryEntries && glossaryEntries.length > 0) {
         const enPlain = (group.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ');
         const jaPlain = (group.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
+        const literalText =
+          (group.enIds || []).some((id) => Boolean(enMap.get(id)?.literalText)) ||
+          (group.jaIds || []).some((id) => Boolean(jaMap.get(id)?.literalText));
         const gCheck = checkGroupGlossary(enPlain, jaPlain, glossaryEntries, jaNormOptions, {
           groupId: group.id,
           dismissedHints,
+          literalText,
         });
         if (gCheck.hasIssues) {
           glossaryWarningGroups += 1;

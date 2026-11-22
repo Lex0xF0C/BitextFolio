@@ -856,10 +856,10 @@ export function checkGroupGlossary(
   jaPlainText,
   glossaryEntries,
   jaNormOptions = DEFAULT_JA_NORM_OPTIONS,
-  { groupId = '', dismissedHints = {} } = {},
+  { groupId = '', dismissedHints = {}, literalText = false } = {},
 ) {
-  const enPlain = stripInlineMarkup(enPlainText || '');
-  const jaPlain = stripInlineMarkup(jaPlainText || '');
+  const enPlain = literalText ? String(enPlainText || '') : stripInlineMarkup(enPlainText || '');
+  const jaPlain = literalText ? String(jaPlainText || '') : stripInlineMarkup(jaPlainText || '');
   const matchedOk = [];
   const missingAccepted = [];
   const deprecatedUsed = [];

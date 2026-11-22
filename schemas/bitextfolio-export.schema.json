@@ -67,6 +67,7 @@
         "id": { "type": "string", "minLength": 1 },
         "rawText": { "type": "string" },
         "plainText": { "type": "string" },
+        "literalText": { "type": "boolean" },
         "markers": {
           "type": "array",
           "items": { "$ref": "#/$defs/MarkerRange" }
@@ -110,6 +111,8 @@
         "tempNoOmission": { "type": "boolean" },
         "tempNoOmissionAt": { "type": "string" },
         "confirmedAlignment": { "type": "boolean" },
+        "xliffFileId": { "type": "string" },
+        "xliffUnitId": { "type": "string" },
         "clausePairs": {
           "type": "array",
           "items": { "$ref": "#/$defs/ClausePair" }
