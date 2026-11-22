@@ -1994,6 +1994,14 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           },
         });
 
+        const exactQuickCheck = el('input', {
+          type: 'checkbox',
+          checked: Boolean(qState.exactMatch),
+          onChange: (ev) => {
+            qState.exactMatch = ev.target.checked;
+          },
+        });
+
         const submitQuick = async () => {
           const enVal = enQuickInput.value.trim();
           const jaVal = jaQuickInput.value.trim();
@@ -2005,6 +2013,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             enHeadword: enVal,
             jaAccepted: jaVal.split(/[|;；、,]/).map((s) => s.trim()).filter(Boolean),
             caseSensitive: /^[A-Z0-9-]+$/.test(enVal),
+            exactMatch: exactQuickCheck.checked,
             notes: '本文から登録',
             mergeIfExists: true,
           });
@@ -2070,6 +2079,18 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             ]),
             chipsRow,
             el('div', { className: 'toolbar-group' }, [
+              el(
+                'label',
+                {
+                  className: 'checkbox-label',
+                  title:
+                    'ONにすると複数形や-ed/-ing等の自動語幹展開を行わず、登録した英語表記に完全一致する箇所のみに反応します',
+                },
+                [
+                  exactQuickCheck,
+                  document.createTextNode('単複・活用を区別する（厳密一致）'),
+                ],
+              ),
               el('button', {
                 type: 'button',
                 className: 'btn btn-primary btn-xs',

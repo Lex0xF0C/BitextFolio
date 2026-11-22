@@ -739,6 +739,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         placeholder: '備考・使い分けメモ...',
       });
       const caseCheck = el('input', { type: 'checkbox' });
+      const exactMatchCheck = el('input', { type: 'checkbox' });
       const saveBtnLabel = el('span', { textContent: 'TM・用語集に登録' });
 
       const splitMulti = (v) =>
@@ -755,6 +756,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         jaDepInput.value = '';
         notesInput.value = '';
         caseCheck.checked = false;
+        exactMatchCheck.checked = false;
         saveBtnLabel.textContent = 'TM・用語集に登録';
       };
 
@@ -865,6 +867,18 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
                 caseCheck,
                 document.createTextNode('大文字・小文字を区別する'),
               ]),
+              el(
+                'label',
+                {
+                  className: 'checkbox-label',
+                  title:
+                    'ONにすると複数形や-ed/-ing等の自動語幹展開を行わず、登録した英語表記に完全一致する箇所のみに反応します',
+                },
+                [
+                  exactMatchCheck,
+                  document.createTextNode('単複・活用を区別する（厳密一致）'),
+                ],
+              ),
             ]),
           ]),
           el('div', { className: 'toolbar-group' }, [
@@ -881,6 +895,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
                     jaAccepted: splitMulti(jaAccInput.value),
                     jaDeprecated: splitMulti(jaDepInput.value),
                     caseSensitive: caseCheck.checked,
+                    exactMatch: exactMatchCheck.checked,
                     notes: notesInput.value,
                   });
                   resetForm();
@@ -912,7 +927,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         ]),
       );
 
-      const listContainer = el('div', { className: 'preview-warnings-list' });
+      const listContainer = el('div', { className: 'preview-warnings-list glossary-list-box' });
       const filterInput = el('input', {
         type: 'search',
         className: 'text-input',
@@ -969,6 +984,9 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
                 entry.caseSensitive
                   ? el('div', { className: 'meta-sep', textContent: '大小文字区別あり' })
                   : null,
+                entry.exactMatch
+                  ? el('div', { className: 'meta-sep', textContent: '単複・活用区別（厳密一致）' })
+                  : null,
               ]),
               el('td', { textContent: (entry.jaAccepted || []).join(' / ') || '—' }),
               el('td', {
@@ -990,6 +1008,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
                       jaDepInput.value = (entry.jaDeprecated || []).join(' | ');
                       notesInput.value = entry.notes || '';
                       caseCheck.checked = Boolean(entry.caseSensitive);
+                      exactMatchCheck.checked = Boolean(entry.exactMatch);
                       saveBtnLabel.textContent = '変更を保存';
                     },
                   }),
@@ -1012,7 +1031,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       bodyContent.appendChild(listContainer);
     } else if (activeTab === 'candidates') {
       let minFreq = 2;
-      const resultsBox = el('div', { className: 'preview-warnings-list' });
+      const resultsBox = el('div', { className: 'preview-warnings-list glossary-list-box' });
       const freqControl = el('div', { className: 'segmented-control' });
 
       function renderFreqButtons() {
@@ -1128,7 +1147,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       );
       bodyContent.appendChild(resultsBox);
     } else if (activeTab === 'lookup') {
-      const lookupResultsBox = el('div', { className: 'preview-warnings-list' });
+      const lookupResultsBox = el('div', { className: 'preview-warnings-list glossary-list-box' });
       const lookupInput = el('input', {
         type: 'search',
         className: 'text-input',
@@ -1209,7 +1228,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       const pasteArea = el('textarea', {
         className: 'source-textarea',
         placeholder:
-          'enHeadword,jaAccepted,jaDeprecated,enVariants,caseSensitive,notes\ntriage,トリアージ,選別,triaged | triaging,false,カタカナ統一',
+          'enHeadword,jaAccepted,jaDeprecated,enVariants,caseSensitive,exactMatch,notes\ntriage,トリアージ,選別,triaged | triaging,false,false,カタカナ統一',
       });
       const replaceCheck = el('input', { type: 'checkbox' });
       const fileInput = el('input', {
@@ -1298,7 +1317,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       );
     }
 
-    return el('div', { className: 'modal-dialog', role: 'dialog', 'aria-modal': 'true' }, [
+    return el('div', { className: 'modal-dialog is-wide', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { className: 'modal-header' }, [
         el('h2', { textContent: '翻訳メモリ (TM) ・用語集・統一チェック' }),
         el('button', {

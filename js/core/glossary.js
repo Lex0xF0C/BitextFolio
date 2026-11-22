@@ -213,9 +213,10 @@ export function findEnglishGlossarySpans(enPlainText, entry) {
   if (!plain || !entry?.enHeadword) return [];
   const tokens = tokenizeEnglishWords(plain);
   const caseSensitive = Boolean(entry.caseSensitive);
+  const useInflection = !entry.exactMatch;
   const rawSpans = [];
 
-  for (const span of matchEnglishPhrase(tokens, entry.enHeadword, caseSensitive, true)) {
+  for (const span of matchEnglishPhrase(tokens, entry.enHeadword, caseSensitive, useInflection)) {
     rawSpans.push({ start: span.start, end: span.end, text: plain.slice(span.start, span.end) });
   }
 
@@ -1048,7 +1049,7 @@ export function parseGlossaryDelimited(rawText, delimiter = 'auto') {
     );
 
   let startRow = 0;
-  let colMap = { en: 0, ja: 1, dep: 2, variants: 3, caseSensitive: 4, notes: 5 };
+  let colMap = { en: 0, ja: 1, dep: 2, variants: 3, caseSensitive: 4, exactMatch: -1, notes: 5 };
 
   if (looksLikeHeader) {
     startRow = 1;
@@ -1066,6 +1067,9 @@ export function parseGlossaryDelimited(rawText, delimiter = 'auto') {
       caseSensitive: firstCells.findIndex((c) =>
         ['casesensitive', 'case', '大文字小文字'].includes(c),
       ),
+      exactMatch: firstCells.findIndex((c) =>
+        ['exactmatch', 'exact', 'strictinflection', '厳密一致', '単複区別', '活用区別'].includes(c),
+      ),
       notes: firstCells.findIndex((c) => ['notes', 'note', '備考', 'メモ'].includes(c)),
     };
   }
@@ -1081,6 +1085,8 @@ export function parseGlossaryDelimited(rawText, delimiter = 'auto') {
     const enVariants = colMap.variants >= 0 ? splitListCell(row[colMap.variants]) : [];
     const caseRaw = colMap.caseSensitive >= 0 ? (row[colMap.caseSensitive] || '').toLowerCase() : '';
     const caseSensitive = ['true', '1', 'yes', '区別'].includes(caseRaw);
+    const exactRaw = colMap.exactMatch >= 0 ? (row[colMap.exactMatch] || '').toLowerCase() : '';
+    const exactMatch = ['true', '1', 'yes', '区別', '厳密一致'].includes(exactRaw);
     const notes = colMap.notes >= 0 ? (row[colMap.notes] || '').trim() : '';
 
     entries.push({
@@ -1090,6 +1096,7 @@ export function parseGlossaryDelimited(rawText, delimiter = 'auto') {
       jaAccepted,
       jaDeprecated,
       caseSensitive,
+      exactMatch,
       notes,
     });
   }
@@ -1115,6 +1122,7 @@ export function serializeGlossaryDelimited(entries, delimiter = ',') {
     'jaDeprecated',
     'enVariants',
     'caseSensitive',
+    'exactMatch',
     'notes',
   ];
   const rows = [header.join(delimiter)];
@@ -1127,6 +1135,7 @@ export function serializeGlossaryDelimited(entries, delimiter = ',') {
         escapeDelimitedCell((e.jaDeprecated || []).join(' | '), delimiter),
         escapeDelimitedCell((e.enVariants || []).join(' | '), delimiter),
         escapeDelimitedCell(e.caseSensitive ? 'true' : 'false', delimiter),
+        escapeDelimitedCell(e.exactMatch ? 'true' : 'false', delimiter),
         escapeDelimitedCell(e.notes || '', delimiter),
       ].join(delimiter),
     );

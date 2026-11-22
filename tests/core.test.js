@@ -1046,3 +1046,76 @@ test('virtual-window computes visible index range, spacer heights, and scroll an
   assert.equal(computeAnchoredScrollTop(20, 100, 50), 0);
 });
 
+test('Per-entry exactMatch disables automatic inflection matching to separate singular and plural entries', () => {
+  const entries = [
+    {
+      id: 'g_sg',
+      enHeadword: 'policy',
+      enVariants: [],
+      jaAccepted: ['方針'],
+      jaDeprecated: [],
+      caseSensitive: false,
+      exactMatch: true,
+    },
+    {
+      id: 'g_pl',
+      enHeadword: 'policies',
+      enVariants: [],
+      jaAccepted: ['諸方針'],
+      jaDeprecated: [],
+      caseSensitive: false,
+      exactMatch: true,
+    },
+  ];
+
+  // Singular sentence matches ONLY singular entry without triggering false missing on plural entry
+  const sgRes = checkGroupGlossary('Review the policy.', '方針を確認する。', entries);
+  assert.equal(sgRes.hasIssues, false);
+  assert.equal(sgRes.matchedOk.length, 1);
+  assert.equal(sgRes.matchedOk[0].entry.id, 'g_sg');
+  assert.equal(sgRes.missingAccepted.length, 0);
+
+  // Plural sentence matches ONLY plural entry without triggering false missing on singular entry
+  const plRes = checkGroupGlossary('Review the policies.', '諸方針を確認する。', entries);
+  assert.equal(plRes.hasIssues, false);
+  assert.equal(plRes.matchedOk.length, 1);
+  assert.equal(plRes.matchedOk[0].entry.id, 'g_pl');
+  assert.equal(plRes.missingAccepted.length, 0);
+
+  // Highlight spans respect exactMatch
+  const blk = buildAlignmentBlock('Review the policy.', '方針を確認する。', 0);
+  const hl = collectGroupHighlightSpans(blk.enSentences, blk.jaSentences, entries);
+  const enSpans = hl.enSpansBySentenceId.get(blk.enSentences[0].id) || [];
+  assert.equal(enSpans.length, 1);
+  assert.match(enSpans[0].title, /policy ⇔ 方針/);
+
+  // Legacy entries without exactMatch keep automatic inflection matching
+  const legacyRes = checkGroupGlossary('Review the policies.', '方針を確認する。', [
+    {
+      id: 'g_legacy',
+      enHeadword: 'policy',
+      enVariants: [],
+      jaAccepted: ['方針'],
+      jaDeprecated: [],
+      caseSensitive: false,
+    },
+  ]);
+  assert.equal(legacyRes.hasIssues, false);
+  assert.equal(legacyRes.matchedOk.length, 1);
+
+  // CSV/TSV round-trip preserves exactMatch, and legacy 6-column CSV defaults exactMatch to false
+  const tsv = serializeGlossaryDelimited(entries, '\t');
+  const parsed = parseGlossaryDelimited(tsv, 'auto');
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].exactMatch, true);
+  assert.equal(parsed[1].exactMatch, true);
+
+  const legacyCsv =
+    'enHeadword,jaAccepted,jaDeprecated,enVariants,caseSensitive,notes\ntriage,トリアージ,選別,triaged,false,メモ';
+  const parsedLegacy = parseGlossaryDelimited(legacyCsv, ',');
+  assert.equal(parsedLegacy.length, 1);
+  assert.equal(parsedLegacy[0].exactMatch, false);
+  assert.equal(parsedLegacy[0].notes, 'メモ');
+});
+
+

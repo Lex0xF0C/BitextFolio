@@ -4,6 +4,14 @@ Architectural and algorithmic decisions for BitextFolio, including rationale, nu
 
 ---
 
+## 2026-11-22 — Per-Entry Inflection Opt-Out (`exactMatch`) for Glossary / TM Entries
+
+- **Decision**: Add an optional boolean `exactMatch` (`単複・活用を区別する（厳密一致）`, default `false`) per glossary/TM entry, supported in the registration modal, inline quick-register bar, and CSV/TSV I/O (with 6-column legacy CSV fallback).
+- **Reason**: Automatic bidirectional stem normalization (`-s`, `-ies` ↔ `-y`, `-ed`, `-ing`, etc.) is convenient for general vocabulary, but causes false missing-translation warnings when singular and plural forms carry distinct legal or technical translations and are registered as separate entries. Making opt-out explicit per entry preserves existing behavior for legacy entries while giving reviewers exact control when needed.
+- **Rejected options**: Disabling automatic inflection globally (would break matching of regular verb/noun inflections for existing glossaries), or implicitly suppressing stem matches whenever another exact entry exists (harder for reviewers to predict and inspect).
+
+---
+
 ## 2026-11-22 — Virtual-Window Pure Calculation Extraction (`js/core/virtual-window.js`)
 
 - **Decision**: Extract `computeVirtualWindowRange` and `computeAnchoredScrollTop` from `js/ui/workspace.js` into a DOM-free `js/core/virtual-window.js` module with TDD unit tests in `tests/core.test.js` (§5.3 step 1).

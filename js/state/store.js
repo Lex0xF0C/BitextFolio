@@ -490,6 +490,7 @@ export function createAppStore() {
       jaDeprecated = [],
       enVariants = [],
       caseSensitive = false,
+      exactMatch = false,
       notes = '',
       mergeIfExists = true,
     }) {
@@ -515,6 +516,7 @@ export function createAppStore() {
             enVariants: [...new Set([...(existing.enVariants || []), ...enVariants])],
             jaAccepted: [...new Set([...(existing.jaAccepted || []), ...accList])],
             jaDeprecated: [...new Set([...(existing.jaDeprecated || []), ...depList])],
+            exactMatch: Boolean(existing.exactMatch || exactMatch),
             notes: existing.notes || String(notes || '').trim(),
           }
         : {
@@ -524,6 +526,7 @@ export function createAppStore() {
             jaAccepted: [...new Set(accList)],
             jaDeprecated: [...new Set(depList)],
             caseSensitive: Boolean(caseSensitive),
+            exactMatch: Boolean(exactMatch),
             notes: String(notes || '').trim(),
           };
 
@@ -903,6 +906,7 @@ export function createAppStore() {
         jaAccepted: (entryInput.jaAccepted || []).map((s) => s.trim()).filter(Boolean),
         jaDeprecated: (entryInput.jaDeprecated || []).map((s) => s.trim()).filter(Boolean),
         caseSensitive: Boolean(entryInput.caseSensitive),
+        exactMatch: Boolean(entryInput.exactMatch),
         notes: String(entryInput.notes || '').trim(),
       };
       await saveGlossaryEntry(entry);

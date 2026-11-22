@@ -4,6 +4,8 @@ All notable changes to BitextFolio are recorded in this file (newest first).
 
 ## 2026-11-22
 
+- Made the Translation Memory / Glossary list, candidate extraction results, and reverse-lookup boxes in `modals.js` taller (`420px` default with sticky table headers) and vertically resizable (`resize: vertical`) inside a wider modal (`is-wide`).
+- Added per-entry `exactMatch` option (`単複・活用を区別する（厳密一致）`) in glossary/TM entries, quick-register bar, and CSV/TSV import/export to disable automatic plural/inflection stem matching when singular and plural forms require distinct translations.
 - Extracted pure virtual-window range and scroll-anchoring math from `js/ui/workspace.js` into `js/core/virtual-window.js` with unit tests (§5.3 step 1).
 - Fixed `el()` in `js/ui/render-helpers.js` to set `.value` directly for `<textarea>`, `<input>`, `<select>`, and `<option>` elements so existing memo, sentence-edit, Japanese-block, and abbreviations values populate properly.
 - Separated machine glossary match styling and warning wording from human confirmation (`P1` / `§4`): changed `.glossary-ok-line` to neutral info blue (`--status-read-fg`) with `ℹ 登録訳語を検出`, and updated warning labels to factual phrasing (`非推奨訳語の候補を検出`, `登録訳語が未検出`, `用語未一致・非推奨候補`).
