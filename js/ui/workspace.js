@@ -97,7 +97,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       el('button', {
         type: 'button',
         className: 'nav-action-btn',
-        textContent: 'JSON保存・復元',
+        textContent: 'JSON / XLIFF入出力',
         onClick: () => store.openModal('json'),
       }),
       el('button', {

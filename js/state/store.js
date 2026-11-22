@@ -35,7 +35,9 @@ import {
 } from '../core/document-builder.js';
 import { DEFAULT_JA_NORM_OPTIONS, SAMPLE_GLOSSARY_ENTRIES } from '../core/glossary.js';
 import { reconcileReloadedBlocks } from '../core/hash-diff.js';
+import { migrateProject } from '../core/schema.js';
 import { DEFAULT_ABBREVIATIONS } from '../core/sentence-splitter.js';
+import { parseXliff21ToProject } from '../core/xliff.js';
 import {
   clearAllGlossaryEntries,
   clearAllTmRecords,
@@ -229,8 +231,8 @@ export function createAppStore() {
     }
 
     if (savedProjects.length > 0) {
-      state.projects = savedProjects;
-      const found = savedProjects.find((p) => p.id === savedActiveId) || savedProjects[0];
+      state.projects = savedProjects.map((p) => migrateProject(p));
+      const found = state.projects.find((p) => p.id === savedActiveId) || state.projects[0];
       state.activeProjectId = found.id;
       state.selectedGroupId = found.lastFocusedGroupId || found.blocks[0]?.groups[0]?.id || null;
     } else {
@@ -408,7 +410,14 @@ export function createAppStore() {
       showToast('ドキュメントを削除しました');
       notify();
     },
-    async importProjectsFromJson({ projects, settings, glossary, tmRecords }) {
+    async importProjectsFromJson({
+      projects,
+      settings,
+      glossary,
+      tmRecords,
+      migrated = false,
+      migratedFromVersion = null,
+    }) {
       if (settings && Array.isArray(settings.abbreviations) && settings.abbreviations.length > 0) {
         state.abbreviations = settings.abbreviations;
         await setSetting('abbreviations', state.abbreviations);
@@ -467,21 +476,46 @@ export function createAppStore() {
         }
       }
       const existingMap = new Map(state.projects.map((p) => [p.id, p]));
-      for (const proj of projects) {
+      const migratedProjects = (projects || []).map((p) => migrateProject(p));
+      for (const proj of migratedProjects) {
         const saved = await saveProject(proj);
         existingMap.set(saved.id, saved);
       }
       state.projects = [...existingMap.values()].sort((a, b) =>
         (b.updatedAt || '').localeCompare(a.updatedAt || ''),
       );
-      if (projects[0]) {
-        state.activeProjectId = projects[0].id;
+      if (migratedProjects[0]) {
+        state.activeProjectId = migratedProjects[0].id;
         state.selectedGroupId =
-          projects[0].lastFocusedGroupId || projects[0].blocks[0]?.groups[0]?.id || null;
+          migratedProjects[0].lastFocusedGroupId ||
+          migratedProjects[0].blocks[0]?.groups[0]?.id ||
+          null;
         await setSetting('activeProjectId', state.activeProjectId);
       }
       state.activeModal = null;
-      showToast(`${projects.length}件のドキュメントをインポートしました`);
+      const migNote = migrated && migratedFromVersion
+        ? `（Schema v${migratedFromVersion} → v2 にマイグレーション済）`
+        : '';
+      showToast(`${migratedProjects.length}件のドキュメントをインポートしました${migNote}`);
+      notify();
+    },
+    async importProjectFromXliff(xliffText, filename = '') {
+      const baseTitle = filename.replace(/\.(xlf|xliff|xml)$/i, '').trim() || 'XLIFFインポート文書';
+      const { project, summary } = parseXliff21ToProject(xliffText, {
+        defaultTitle: baseTitle,
+        abbreviations: state.abbreviations,
+      });
+      const saved = await saveProject(project);
+      state.projects = [saved, ...state.projects];
+      state.activeProjectId = saved.id;
+      state.selectedGroupId = saved.lastFocusedGroupId || saved.blocks[0]?.groups[0]?.id || null;
+      state.filterStatus = 'all';
+      state.searchQuery = '';
+      state.activeModal = null;
+      await setSetting('activeProjectId', saved.id);
+      showToast(
+        `XLIFF 2.1「${saved.title}」を読み込みました（${summary.blocksCount}ブロック / ${summary.groupsCount}グループ）`,
+      );
       notify();
     },
     async registerTermPair({

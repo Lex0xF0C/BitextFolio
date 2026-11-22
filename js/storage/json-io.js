@@ -3,26 +3,30 @@
  * Zero network calls.
  */
 
-const EXPORT_SCHEMA_VERSION = 1;
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrateProject,
+  parseAndValidateImportPayload,
+} from '../core/schema.js';
 
 export function buildProjectExportPayload(project) {
   return {
-    schemaVersion: EXPORT_SCHEMA_VERSION,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     type: 'single_project',
-    projects: [project],
+    projects: [migrateProject(project)],
   };
 }
 
 export function buildAllProjectsExportPayload(projects, settings = {}, glossary = [], tmRecords = []) {
   return {
-    schemaVersion: EXPORT_SCHEMA_VERSION,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     type: 'workspace_backup',
     settings,
     glossary,
     tmRecords,
-    projects,
+    projects: (projects || []).map((p) => migrateProject(p)),
   };
 }
 
@@ -44,43 +48,12 @@ export function triggerJsonDownload(filename, dataObject) {
 }
 
 /**
- * Validates and normalizes imported JSON text.
+ * Validates against BitextFolio JSON Schema rules, migrates stepwise (vN -> vN+1),
+ * and normalizes imported JSON text.
  * @param {string} jsonText
  */
 export function parseImportedJson(jsonText) {
-  let parsed;
-  try {
-    const cleanJson = String(jsonText || '').replace(/^\uFEFF/, '');
-    parsed = JSON.parse(cleanJson);
-  } catch {
-    throw new Error('JSONの構文が正しくありません。UTF-8のJSONファイルを選択してください。');
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('JSONの形式が想定と異なります。');
-  }
-
-  let projects = [];
-  if (Array.isArray(parsed.projects)) {
-    projects = parsed.projects;
-  } else if (parsed.id && Array.isArray(parsed.blocks)) {
-    projects = [parsed];
-  } else {
-    throw new Error('有効なドキュメントデータ（projects配列またはblocks配列）が見つかりません。');
-  }
-
-  for (const proj of projects) {
-    if (!proj || typeof proj.id !== 'string' || !Array.isArray(proj.blocks)) {
-      throw new Error('ドキュメント項目に必須フィールド（id, blocks）が不足しています。');
-    }
-  }
-
-  return {
-    projects,
-    settings: parsed.settings || null,
-    glossary: Array.isArray(parsed.glossary) ? parsed.glossary : null,
-    tmRecords: Array.isArray(parsed.tmRecords) ? parsed.tmRecords : null,
-  };
+  return parseAndValidateImportPayload(jsonText);
 }
 
 /**

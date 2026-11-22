@@ -4,6 +4,7 @@ All notable changes to BitextFolio are recorded in this file (newest first).
 
 ## 2026-11-22
 
+- Added OASIS XLIFF 2.1 bilingual export/import (`js/core/xliff.js`, `js/ui/interchange-panel.js`) mapping n:m alignment groups to `<unit>`/`<segment>`, statuses to `state`/`subState`, memos to `<notes>`, and markers to `<mrk>`, plus `schemas/bitextfolio-export.schema.json` and deterministic schema validation + stepwise `v1 -> v2` migration (`js/core/schema.js`) with fixture tests.
 - Extended deterministic term candidate extraction (`extractTermCandidates`) from 3-gram to 7-gram with per-sentence boundaries, full-span `alreadyInGlossary` checks, and UI controls for word-count range (`1〜7語` / `2〜7語` / `4〜7語`) and display limits (`40件` / `200件` / `500件`, default `200件`).
 - Made the Translation Memory / Glossary list, candidate extraction results, and reverse-lookup boxes in `modals.js` taller (`420px` default with sticky table headers) and vertically resizable (`resize: vertical`) inside a wider modal (`is-wide`).
 - Added per-entry `exactMatch` option (`単複・活用を区別する（厳密一致）`) in glossary/TM entries, quick-register bar, and CSV/TSV import/export to disable automatic plural/inflection stem matching when singular and plural forms require distinct translations.

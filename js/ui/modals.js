@@ -10,6 +10,7 @@ import {
   reverseLookupJapanese,
   serializeGlossaryDelimited,
 } from '../core/glossary.js';
+import { CURRENT_SCHEMA_VERSION } from '../core/schema.js';
 import { DEFAULT_ABBREVIATIONS } from '../core/sentence-splitter.js';
 import { exportTmAsTmx, extractTermCandidates } from '../core/tm.js';
 import {
@@ -20,6 +21,7 @@ import {
   triggerJsonDownload,
   triggerTextDownload,
 } from '../storage/json-io.js';
+import { renderXliffInterchangeSection } from './interchange-panel.js';
 import { el, WARNING_LABELS } from './render-helpers.js';
 
 export function mountModals(modalRoot, store, onJumpToGroup) {
@@ -424,7 +426,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
 
     return el('div', { className: 'modal-dialog', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { className: 'modal-header' }, [
-        el('h2', { textContent: 'JSONバックアップ・復元 / 保存済み文書管理' }),
+        el('h2', { textContent: 'JSON / XLIFF 2.1 入出力・保存済み文書管理' }),
         el('button', {
           type: 'button',
           className: 'btn btn-xs',
@@ -433,12 +435,16 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         }),
       ]),
       el('div', { className: 'modal-body' }, [
+        renderXliffInterchangeSection(activeProj, store),
         el('div', { className: 'form-field' }, [
-          el('span', { className: 'form-label', textContent: 'エクスポート（ブラウザ外へのバックアップ）' }),
+          el('span', {
+            className: 'form-label',
+            textContent: `BitextFolio JSON バックアップ（Schema v${CURRENT_SCHEMA_VERSION} / 決定論的スキーマ検証・v1自動移行）`,
+          }),
           el('div', { className: 'toolbar-group' }, [
             el('button', {
               type: 'button',
-              className: 'btn btn-primary btn-sm',
+              className: 'btn btn-sm',
               disabled: !activeProj,
               textContent: '現在の文書をJSON保存',
               onClick: () => {
@@ -470,7 +476,10 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
           ]),
         ]),
         el('div', { className: 'form-field' }, [
-          el('span', { className: 'form-label', textContent: 'JSONファイルから復元・追加インポート' }),
+          el('span', {
+            className: 'form-label',
+            textContent: 'JSONファイルから復元・追加インポート（v1 / v2 対応）',
+          }),
           jsonFileInput,
         ]),
         el('div', { className: 'form-field' }, [

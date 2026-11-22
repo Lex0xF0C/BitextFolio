@@ -22,6 +22,7 @@ import { buildBlockHashes } from './hash-diff.js';
 import { buildDuplicateJaIndex, detectGroupHints } from './hints.js';
 import { normalizeMarkerRanges } from './markers.js';
 import { stripInlineMarkup } from './markup.js';
+import { CURRENT_SCHEMA_VERSION } from './schema.js';
 import { DEFAULT_ABBREVIATIONS, splitEnglishSentences, splitJapaneseSentences } from './sentence-splitter.js';
 
 export const SAMPLE_SOURCE_TEXT = `During security incident handling, *triage* is the initial process of assessing incoming
@@ -322,6 +323,7 @@ export function createDocumentProject({
   });
   const firstGroupId = blocks[0]?.groups[0]?.id || null;
   return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     id: nextLocalId('doc'),
     title: (title || '').trim() || '無題の対訳ドキュメント',
     createdAt: now,

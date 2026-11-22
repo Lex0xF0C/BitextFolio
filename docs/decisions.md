@@ -4,6 +4,19 @@ Architectural and algorithmic decisions for BitextFolio, including rationale, nu
 
 ---
 
+## 2026-11-22 — XLIFF 2.1 Data Interchange, JSON Schema (`v2`), and Stepwise Migrations (`js/core/schema.js`, `js/core/xliff.js`)
+
+- **Decision**:
+  1. Add OASIS XLIFF 2.1 (`urn:oasis:names:tc:xliff:document:2.0`, `version="2.1"`) bilingual export and import via a DOM-free, DTD/ENTITY-rejecting XML parser in `js/core/xliff.js`. Map blocks to `<group>`, n:m alignment groups to `<unit>` with `Math.max(1, enCount, jaCount)` `<segment>` elements, statuses to `state` + `subState="bitextfolio:*"`, memos/flags to `<unit><notes><note>`, and sentence markers to `<mrk type="comment" value="bitextfolio:marker">`.
+  2. Define `schemas/bitextfolio-export.schema.json` (`schemaVersion: 2`) and implement handwritten deterministic schema validation + stepwise `vN -> vN+1` migrations (`migrateProject`, `migrateExportPayload`, `parseAndValidateImportPayload`) in `js/core/schema.js`, applied on both JSON import and IndexedDB load.
+- **Reason**:
+  - Mapping each group to a `<unit>` containing one `<segment>` per aligned sentence preserves both sentence boundaries and n:m pairings across external CAT tools without losing unmatched (`1:0` / `0:1`) or `2:1` / `1:2` structures.
+  - Under `P1`, external CAT `state="translated"` and `state="reviewed"` import as `'read'` (neutral, human review still pending), while `'verified'` is restored only when `subState="bitextfolio:verified"` or `state="final"` is present in the imported file.
+  - Using a pure JS XML parser and handwritten schema validator satisfies `P4` (zero external network/DTD fetching), `P5` (zero `innerHTML`), `P6` (zero dependencies/build steps), and the DOM-free `js/core/` boundary.
+- **Rejected options**: Adding `ajv` or `fast-xml-parser` npm runtime dependencies (violates zero-build static delivery `P6`), or using `DOMParser` in `js/core/` (violates the DOM-free `js/core/` layer boundary).
+
+---
+
 ## 2026-11-22 — 7-Gram Term Candidate Extraction & Configurable Display Limit (`40` / `200` / `500`)
 
 - **Decision**: Extend `extractTermCandidates` in `js/core/tm.js` from 1–3 word n-grams to 1–7 word n-grams (`minN` / `maxN` configurable in UI as `1〜7語`, `2〜7語`, `4〜7語`), raise default `maxResults` from `40` to `200` (UI selectable: `40件` / `200件` / `500件`), tokenize English sentences individually within each alignment group, cache Japanese co-occurrence extraction after slicing `maxResults`, and require full-span glossary coverage (`sp.start === 0 && sp.end === bestDisplay.length`) for `alreadyInGlossary`.

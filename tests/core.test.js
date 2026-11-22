@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   mergeSentenceWithNextInBlock,
@@ -65,9 +68,21 @@ import {
   findTmMatches,
 } from '../js/core/tm.js';
 import {
+  CURRENT_SCHEMA_VERSION,
+  migrateExportPayload,
+  migrateProject,
+  parseAndValidateImportPayload,
+  validateExportPayload,
+} from '../js/core/schema.js';
+import {
   computeAnchoredScrollTop,
   computeVirtualWindowRange,
 } from '../js/core/virtual-window.js';
+import {
+  exportProjectToXliff21,
+  parseXliff21ToProject,
+  XLIFF_21_NAMESPACE,
+} from '../js/core/xliff.js';
 
 test('English splitter preserves abbreviations, decimals, versions, and quotes', () => {
   const input =
@@ -1162,3 +1177,212 @@ test('extractTermCandidates supports up to 7-grams, >40 maxResults, minN filteri
   });
   assert.ok(overForty.length > 40);
 });
+
+test('XLIFF 2.1 export/import preserves n:m alignment groups, states, notes, markers, and XML escaping', () => {
+  let blk0 = buildAlignmentBlock(
+    'Alpha & Beta <check>.',
+    'アルファ＆ベータの確認。',
+    0,
+  );
+  blk0 = updateSentenceMarkersInBlock(blk0, 'en', blk0.enSentences[0].id, (prev, max) =>
+    addMarkerRange(prev, 0, 5, max),
+  );
+  blk0.groups[0] = {
+    ...blk0.groups[0],
+    status: 'verified',
+    memo: '確定メモ\n2行目',
+    tempNoOmission: true,
+  };
+
+  let blk1 = buildAlignmentBlock(
+    'First source. Second source. Unmatched EN.',
+    '結合訳文です。対応なし和文。',
+    1,
+  );
+  // Create 2:1 group + 1:0 + 0:1
+  blk1 = moveSentenceToGroup(blk1, 'en', blk1.enSentences[1].id, blk1.groups[0].id);
+  blk1.groups[0] = { ...blk1.groups[0], status: 'needs_review', memo: '2対1の確認' };
+  const thirdEnGroup = blk1.groups.find((g) => g.enIds.includes(blk1.enSentences[2].id));
+  if (thirdEnGroup) thirdEnGroup.status = 'unread';
+  const unmatchedJaGroup = blk1.groups.find((g) => g.enIds.length === 0 && g.jaIds.length === 1);
+  if (unmatchedJaGroup) unmatchedJaGroup.status = 'read';
+
+  const project = {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    id: 'doc_xliff_test',
+    title: 'XLIFF テスト <v2.1>',
+    blocks: [blk0, blk1],
+  };
+
+  const xliff = exportProjectToXliff21(project);
+  assert.ok(xliff.includes(`xmlns="${XLIFF_21_NAMESPACE}"`));
+  assert.ok(xliff.includes('version="2.1"'));
+  assert.ok(xliff.includes('</mrk> &amp; Beta &lt;check&gt;.'));
+  assert.ok(xliff.includes('state="final" subState="bitextfolio:verified"'));
+  assert.ok(xliff.includes('state="translated" subState="bitextfolio:needs_review"'));
+  assert.ok(xliff.includes('<mrk id='));
+  assert.ok(xliff.includes('value="bitextfolio:marker"'));
+
+  const { project: imported, summary } = parseXliff21ToProject(xliff);
+  assert.equal(imported.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.equal(imported.title, 'XLIFF テスト <v2.1>');
+  assert.equal(summary.blocksCount, 2);
+  assert.equal(imported.blocks[0].enSentences[0].plainText, 'Alpha & Beta <check>.');
+  assert.deepEqual(imported.blocks[0].enSentences[0].markers, [{ start: 0, end: 5 }]);
+  assert.equal(imported.blocks[0].groups[0].status, 'verified');
+  assert.equal(imported.blocks[0].groups[0].memo, '確定メモ\n2行目');
+  assert.equal(imported.blocks[0].groups[0].tempNoOmission, true);
+
+  // Verify 2:1, 1:0, and 0:1 groups survived round-trip
+  const impGrp2to1 = imported.blocks[1].groups[0];
+  assert.equal(impGrp2to1.enIds.length, 2);
+  assert.equal(impGrp2to1.jaIds.length, 1);
+  assert.equal(impGrp2to1.status, 'needs_review');
+  assert.equal(impGrp2to1.memo, '2対1の確認');
+  assert.ok(imported.blocks[1].groups.some((g) => g.enIds.length === 1 && g.jaIds.length === 0));
+  assert.ok(imported.blocks[1].groups.some((g) => g.enIds.length === 0 && g.jaIds.length === 1 && g.status === 'read'));
+});
+
+test('XLIFF 2.1 importer handles external CAT files, inline tags, P1 non-auto-verify, and rejects XXE/XLIFF 1.2', () => {
+  const catXliff = `<?xml version="1.0" encoding="UTF-8"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="ja">
+  <file id="f1" original="cat_sample.txt">
+    <unit id="u1">
+      <notes>
+        <note category="reviewer">Check terminology</note>
+      </notes>
+      <segment id="s1" state="reviewed">
+        <source>Use <pc id="1">strong</pc> passwords<ph id="2"/>.</source>
+        <target>強力なパスワードを使用してください。</target>
+      </segment>
+      <ignorable><source> </source></ignorable>
+    </unit>
+    <unit id="u2">
+      <segment id="s2" state="initial">
+        <source>Pending item.</source>
+      </segment>
+    </unit>
+  </file>
+</xliff>`;
+
+  const { project } = parseXliff21ToProject(catXliff);
+  assert.equal(project.title, 'cat_sample.txt');
+  assert.equal(project.blocks.length, 1);
+  assert.equal(project.blocks[0].groups.length, 2);
+  assert.equal(project.blocks[0].enSentences[0].plainText, 'Use strong passwords.');
+  assert.equal(project.blocks[0].groups[0].memo, '[reviewer] Check terminology');
+  // P1: external state="reviewed" maps to human-unconfirmed 'read', NOT 'verified'
+  assert.equal(project.blocks[0].groups[0].status, 'read');
+  assert.equal(project.blocks[0].groups[1].status, 'unread');
+
+  assert.throws(
+    () => parseXliff21ToProject('<!DOCTYPE xliff><xliff version="2.1"><file id="1"><unit id="u"><segment><source>a</source></segment></unit></file></xliff>'),
+    /DOCTYPE/,
+  );
+  assert.throws(
+    () => parseXliff21ToProject('<xliff version="1.2"><file original="a"><body><trans-unit id="1"><source>a</source></trans-unit></body></file></xliff>'),
+    /XLIFF 2\.0 \/ 2\.1/,
+  );
+});
+
+test('JSON Schema validation and stepwise v1 -> v2 migration handle legacy fixtures and reject invalid payloads', () => {
+  const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const schemaJson = JSON.parse(
+    fs.readFileSync(path.join(rootDir, 'schemas', 'bitextfolio-export.schema.json'), 'utf8'),
+  );
+  assert.equal(schemaJson.properties.schemaVersion.const, CURRENT_SCHEMA_VERSION);
+
+  // Legacy v1 export fixture missing v2 fields (plainText, markers, clausePairs, tempNoOmission, exactMatch, fuzzyTypoCheck)
+  const v1Payload = {
+    schemaVersion: 1,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    type: 'workspace_backup',
+    settings: {
+      abbreviations: ['Fig.', 'e.g.'],
+      jaNormOptions: { normalizeWidth: true },
+    },
+    glossary: [
+      {
+        id: 'glo_legacy_1',
+        enHeadword: 'triage',
+        jaAccepted: ['トリアージ'],
+      },
+    ],
+    projects: [
+      {
+        id: 'doc_v1_1',
+        title: '旧形式バックアップ',
+        blocks: [
+          {
+            id: 'blk_1',
+            index: 0,
+            enRaw: '*Triage* starts.',
+            jaRaw: 'トリアージを開始する。',
+            enSentences: [{ id: 'en_1', rawText: '*Triage* starts.' }],
+            jaSentences: [{ id: 'ja_1', rawText: 'トリアージを開始する。' }],
+            groups: [
+              {
+                id: 'grp_1',
+                enIds: ['en_1'],
+                jaIds: ['ja_1'],
+                status: 'read',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  assert.equal(validateExportPayload(v1Payload).valid, true);
+  const imported = parseAndValidateImportPayload(JSON.stringify(v1Payload));
+  assert.equal(imported.schemaVersion, 2);
+  assert.equal(imported.migratedFromVersion, 1);
+  assert.equal(imported.migrated, true);
+  assert.equal(imported.glossary[0].exactMatch, false);
+  assert.equal(imported.settings.jaNormOptions.fuzzyTypoCheck, true);
+  assert.equal(imported.settings.jaNormOptions.fuzzyMinLength, 4);
+
+  const migProj = imported.projects[0];
+  assert.equal(migProj.schemaVersion, 2);
+  assert.equal(migProj.blocks[0].enSentences[0].plainText, 'Triage starts.');
+  assert.deepEqual(migProj.blocks[0].enSentences[0].markers, []);
+  assert.deepEqual(migProj.blocks[0].groups[0].clausePairs, []);
+  assert.equal(migProj.blocks[0].groups[0].tempNoOmission, false);
+  assert.equal(migProj.blocks[0].groups[0].status, 'read');
+
+  // Legacy bare project without schemaVersion or wrapper
+  const bareMigrated = migrateProject(v1Payload.projects[0]);
+  assert.equal(bareMigrated.schemaVersion, 2);
+  assert.deepEqual(bareMigrated.dismissedHints, {});
+  const bareEnv = migrateExportPayload(v1Payload.projects[0]);
+  assert.equal(bareEnv.payload.schemaVersion, 2);
+  assert.equal(bareEnv.payload.projects.length, 1);
+
+  // Reject invalid payloads deterministically
+  assert.throws(
+    () => parseAndValidateImportPayload(JSON.stringify({ schemaVersion: 99, projects: [] })),
+    /未対応のスキーマバージョン/,
+  );
+  const badStatus = validateExportPayload({
+    schemaVersion: 2,
+    type: 'single_project',
+    projects: [
+      {
+        id: 'doc_bad',
+        blocks: [
+          {
+            id: 'b1',
+            enSentences: [{ id: 'e1', rawText: 'Hi.', markers: [{ start: 2, end: 1 }] }],
+            jaSentences: [],
+            groups: [{ id: 'g1', enIds: ['e1'], jaIds: [], status: 'bogus_status' }],
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(badStatus.valid, false);
+  assert.ok(badStatus.errors.some((e) => e.includes('markers[0]')));
+  assert.ok(badStatus.errors.some((e) => e.includes('bogus_status')));
+});
+
