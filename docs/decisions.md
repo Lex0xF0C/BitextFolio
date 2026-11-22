@@ -4,6 +4,17 @@ Architectural and algorithmic decisions for BitextFolio, including rationale, nu
 
 ---
 
+## 2026-11-22 — 7-Gram Term Candidate Extraction & Configurable Display Limit (`40` / `200` / `500`)
+
+- **Decision**: Extend `extractTermCandidates` in `js/core/tm.js` from 1–3 word n-grams to 1–7 word n-grams (`minN` / `maxN` configurable in UI as `1〜7語`, `2〜7語`, `4〜7語`), raise default `maxResults` from `40` to `200` (UI selectable: `40件` / `200件` / `500件`), tokenize English sentences individually within each alignment group, cache Japanese co-occurrence extraction after slicing `maxResults`, and require full-span glossary coverage (`sp.start === 0 && sp.end === bestDisplay.length`) for `alreadyInGlossary`.
+- **Reason**:
+  - Multi-word legal/technical terms frequently span 4–7 words; capping at 3-grams missed longer recurring phrases, while capping output at 40 items sorted by frequency caused 1-grams to crowd out multi-word terms and hid `1回以上出現` candidates whenever 40+ higher-frequency items existed.
+  - Using substring glossary matching caused a registered 1-word entry to mark 2–7 word compound phrases containing it as "already registered", pushing them to the bottom of the list.
+  - Computing Japanese co-occurrence terms lazily after sorting and slicing keeps `minFreq = 1` + 7-gram + `500件` responsive in the browser.
+- **Rejected options**: Unbounded DOM rendering of all `1..7`-grams (would risk UI slowdowns on large documents when `minFreq = 1` produces thousands of unique 7-grams).
+
+---
+
 ## 2026-11-22 — Per-Entry Inflection Opt-Out (`exactMatch`) for Glossary / TM Entries
 
 - **Decision**: Add an optional boolean `exactMatch` (`単複・活用を区別する（厳密一致）`, default `false`) per glossary/TM entry, supported in the registration modal, inline quick-register bar, and CSV/TSV I/O (with 6-column legacy CSV fallback).

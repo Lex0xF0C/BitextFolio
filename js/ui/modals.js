@@ -1031,10 +1031,15 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       bodyContent.appendChild(listContainer);
     } else if (activeTab === 'candidates') {
       let minFreq = 2;
+      let minN = 1;
+      let maxResults = 200;
       const resultsBox = el('div', { className: 'preview-warnings-list glossary-list-box' });
-      const freqControl = el('div', { className: 'segmented-control' });
+      const freqControl = el('div', { className: 'segmented-control', role: 'group', 'aria-label': '最小出現回数' });
+      const ngramControl = el('div', { className: 'segmented-control', role: 'group', 'aria-label': '語数範囲' });
+      const limitControl = el('div', { className: 'segmented-control', role: 'group', 'aria-label': '最大表示件数' });
+      const countSummaryEl = el('span', { className: 'meta-sep tabular-nums' });
 
-      function renderFreqButtons() {
+      function renderCandidateControls() {
         freqControl.textContent = '';
         for (const freq of [2, 1]) {
           freqControl.appendChild(
@@ -1044,7 +1049,43 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
               textContent: `${freq}回以上出現`,
               onClick: () => {
                 minFreq = freq;
-                renderFreqButtons();
+                renderCandidateControls();
+                renderCandidates();
+              },
+            }),
+          );
+        }
+
+        ngramControl.textContent = '';
+        for (const [nVal, label] of [
+          [1, '1〜7語'],
+          [2, '2〜7語'],
+          [4, '4〜7語'],
+        ]) {
+          ngramControl.appendChild(
+            el('button', {
+              type: 'button',
+              className: `segmented-btn${minN === nVal ? ' is-active' : ''}`,
+              textContent: label,
+              onClick: () => {
+                minN = nVal;
+                renderCandidateControls();
+                renderCandidates();
+              },
+            }),
+          );
+        }
+
+        limitControl.textContent = '';
+        for (const limit of [40, 200, 500]) {
+          limitControl.appendChild(
+            el('button', {
+              type: 'button',
+              className: `segmented-btn${maxResults === limit ? ' is-active' : ''}`,
+              textContent: `${limit}件`,
+              onClick: () => {
+                maxResults = limit;
+                renderCandidateControls();
                 renderCandidates();
               },
             }),
@@ -1055,18 +1096,22 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
       function renderCandidates() {
         resultsBox.textContent = '';
         if (!activeProj) {
+          countSummaryEl.textContent = '';
           resultsBox.appendChild(el('div', { textContent: '開いているドキュメントがありません。' }));
           return;
         }
         const candidates = extractTermCandidates(activeProj.blocks, store.state.glossary, {
           minFreq,
-          maxResults: 40,
+          minN,
+          maxN: 7,
+          maxResults,
         });
+        countSummaryEl.textContent = `表示中: ${candidates.length}件（上限 ${maxResults}件・${minN}〜7語）`;
         if (candidates.length === 0) {
           resultsBox.appendChild(
             el('div', {
               textContent:
-                '条件に一致する用語候補が見つかりません。短い文書の場合は「1回以上出現」をお試しください。',
+                '条件に一致する用語候補が見つかりません。短い文書の場合は「1回以上出現」や「1〜7語」をお試しください。',
             }),
           );
           return;
@@ -1074,7 +1119,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         const table = el('table', { className: 'shortcut-table' });
         table.appendChild(
           el('tr', {}, [
-            el('th', { textContent: '英語候補（頻度）' }),
+            el('th', { textContent: '英語候補（語数・頻度）' }),
             el('th', { textContent: '同一枠内の共起日本語候補' }),
             el('th', { textContent: '操作' }),
           ]),
@@ -1098,7 +1143,7 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
                 el('strong', { textContent: cand.enTerm }),
                 el('div', {
                   className: 'meta-sep tabular-nums',
-                  textContent: `出現 ${cand.count}グループ`,
+                  textContent: `${cand.wordCount}語 · 出現 ${cand.count}グループ`,
                 }),
               ]),
               el('td', {}, [
@@ -1133,16 +1178,21 @@ export function mountModals(modalRoot, store, onJumpToGroup) {
         resultsBox.appendChild(table);
       }
 
-      renderFreqButtons();
+      renderCandidateControls();
       renderCandidates();
 
       bodyContent.appendChild(
         el('div', { className: 'form-field' }, [
           el('span', {
             className: 'form-label',
-            textContent: '決定的n-gram・共起分析による用語候補の抽出（現在開いている文書）',
+            textContent: '決定的n-gram（1〜7語）・共起分析による用語候補の抽出（現在開いている文書）',
           }),
-          el('div', { className: 'toolbar-group' }, [freqControl]),
+          el('div', { className: 'toolbar-group' }, [
+            freqControl,
+            ngramControl,
+            limitControl,
+            countSummaryEl,
+          ]),
         ]),
       );
       bodyContent.appendChild(resultsBox);

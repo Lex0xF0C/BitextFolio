@@ -5,7 +5,7 @@
  */
 
 import { computeDeterministicHash, stripInlineMarkup } from './markup.js';
-import { findEnglishGlossaryMatches } from './glossary.js';
+import { findEnglishGlossarySpans } from './glossary.js';
 
 const EN_STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'because', 'been', 'before', 'being', 'between',
@@ -212,51 +212,62 @@ export function extractJapaneseCandidateTerms(jaPlain) {
 
 /**
  * Deterministic term candidate extractor:
- * extracts frequent English 1-3 word n-grams and co-occurring Japanese terms within the same alignment group.
+ * extracts frequent English 1-7 word n-grams and co-occurring Japanese terms within the same alignment group.
  */
-export function extractTermCandidates(blocks, glossaryEntries = [], { minFreq = 2, maxResults = 40 } = {}) {
-  const phraseStats = new Map(); // normPhrase -> { displayCounts: Map, count: number, groups: Array<{ groupId, jaPlain }> }
+export function extractTermCandidates(
+  blocks,
+  glossaryEntries = [],
+  { minFreq = 2, minN = 1, maxN = 7, maxResults = 200 } = {},
+) {
+  const safeMinN = Math.max(1, Math.min(7, Number(minN) || 1));
+  const safeMaxN = Math.max(safeMinN, Math.min(7, Number(maxN) || 7));
+  const safeMaxResults = Math.max(1, Number(maxResults) || 200);
+  const phraseStats = new Map(); // normPhrase -> { displayCounts: Map, count: number, groups: Array<{ groupId, blockId, jaPlain }> }
 
   for (const blk of blocks || []) {
     const enMap = new Map((blk.enSentences || []).map((s) => [s.id, s]));
     const jaMap = new Map((blk.jaSentences || []).map((s) => [s.id, s]));
 
     for (const grp of blk.groups || []) {
-      const enPlain = (grp.enIds || []).map((id) => enMap.get(id)?.plainText || '').join(' ');
-      const jaPlain = (grp.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
-      if (!enPlain.trim()) continue;
+      const enTexts = (grp.enIds || [])
+        .map((id) => enMap.get(id)?.plainText || '')
+        .filter((t) => t.trim().length > 0);
+      if (enTexts.length === 0) continue;
 
-      const tokens = extractEnglishTokens(enPlain);
+      const jaPlain = (grp.jaIds || []).map((id) => jaMap.get(id)?.plainText || '').join(' ');
       const seenInGroup = new Set();
 
-      for (let len = 1; len <= 3; len += 1) {
-        for (let i = 0; i <= tokens.length - len; i += 1) {
-          const slice = tokens.slice(i, i + len);
-          const firstLower = slice[0].toLowerCase();
-          const lastLower = slice[slice.length - 1].toLowerCase();
-          if (EN_STOP_WORDS.has(firstLower) || EN_STOP_WORDS.has(lastLower)) continue;
-          if (len === 1 && firstLower.length < 3 && !/^[A-Z]{2,}$/.test(slice[0])) continue;
-          if (len > 1 && slice.every((w) => EN_STOP_WORDS.has(w.toLowerCase()))) continue;
+      for (const sentenceText of enTexts) {
+        const tokens = extractEnglishTokens(sentenceText);
+        for (let len = safeMinN; len <= safeMaxN; len += 1) {
+          for (let i = 0; i <= tokens.length - len; i += 1) {
+            const slice = tokens.slice(i, i + len);
+            const firstLower = slice[0].toLowerCase();
+            const lastLower = slice[slice.length - 1].toLowerCase();
+            if (EN_STOP_WORDS.has(firstLower) || EN_STOP_WORDS.has(lastLower)) continue;
+            if (len === 1 && firstLower.length < 3 && !/^[A-Z]{2,}$/.test(slice[0])) continue;
+            if (len > 1 && slice.every((w) => EN_STOP_WORDS.has(w.toLowerCase()))) continue;
 
-          const rawPhrase = slice.join(' ');
-          const normKey = rawPhrase.toLowerCase();
-          if (seenInGroup.has(normKey)) continue;
-          seenInGroup.add(normKey);
+            const rawPhrase = slice.join(' ');
+            const normKey = rawPhrase.toLowerCase();
+            if (seenInGroup.has(normKey)) continue;
+            seenInGroup.add(normKey);
 
-          let rec = phraseStats.get(normKey);
-          if (!rec) {
-            rec = { normKey, displayCounts: new Map(), count: 0, groups: [] };
-            phraseStats.set(normKey, rec);
+            let rec = phraseStats.get(normKey);
+            if (!rec) {
+              rec = { normKey, displayCounts: new Map(), count: 0, groups: [] };
+              phraseStats.set(normKey, rec);
+            }
+            rec.count += 1;
+            rec.displayCounts.set(rawPhrase, (rec.displayCounts.get(rawPhrase) || 0) + 1);
+            rec.groups.push({ groupId: grp.id, blockId: blk.id, jaPlain });
           }
-          rec.count += 1;
-          rec.displayCounts.set(rawPhrase, (rec.displayCounts.get(rawPhrase) || 0) + 1);
-          rec.groups.push({ groupId: grp.id, blockId: blk.id, jaPlain });
         }
       }
     }
   }
 
-  const candidates = [];
+  const preliminary = [];
   for (const rec of phraseStats.values()) {
     if (rec.count < minFreq) continue;
 
@@ -270,13 +281,39 @@ export function extractTermCandidates(blocks, glossaryEntries = [], { minFreq = 
       }
     }
 
-    const alreadyInGlossary = (glossaryEntries || []).some(
-      (g) => findEnglishGlossaryMatches(bestDisplay, g).length > 0,
+    const alreadyInGlossary = (glossaryEntries || []).some((g) =>
+      findEnglishGlossarySpans(bestDisplay, g).some(
+        (sp) => sp.start === 0 && sp.end === bestDisplay.length,
+      ),
     );
 
+    const wordCount = bestDisplay.split(/\s+/).length;
+    preliminary.push({
+      enTerm: bestDisplay,
+      wordCount,
+      count: rec.count,
+      alreadyInGlossary,
+      groups: rec.groups,
+    });
+  }
+
+  const topCandidates = preliminary
+    .sort((a, b) => {
+      if (a.alreadyInGlossary !== b.alreadyInGlossary) return a.alreadyInGlossary ? 1 : -1;
+      return b.count - a.count || b.wordCount - a.wordCount || a.enTerm.localeCompare(b.enTerm);
+    })
+    .slice(0, safeMaxResults);
+
+  const jaTermsCache = new Map();
+  return topCandidates.map((cand) => {
     const jaCounts = new Map();
-    for (const g of rec.groups) {
-      for (const jt of extractJapaneseCandidateTerms(g.jaPlain)) {
+    for (const g of cand.groups) {
+      let jaTerms = jaTermsCache.get(g.jaPlain);
+      if (!jaTerms) {
+        jaTerms = extractJapaneseCandidateTerms(g.jaPlain);
+        jaTermsCache.set(g.jaPlain, jaTerms);
+      }
+      for (const jt of jaTerms) {
         jaCounts.set(jt, (jaCounts.get(jt) || 0) + 1);
       }
     }
@@ -286,21 +323,13 @@ export function extractTermCandidates(blocks, glossaryEntries = [], { minFreq = 
       .slice(0, 5)
       .map(([jaTerm, count]) => ({ jaTerm, count }));
 
-    const wordCount = bestDisplay.split(/\s+/).length;
-    candidates.push({
-      enTerm: bestDisplay,
-      wordCount,
-      count: rec.count,
-      alreadyInGlossary,
+    return {
+      enTerm: cand.enTerm,
+      wordCount: cand.wordCount,
+      count: cand.count,
+      alreadyInGlossary: cand.alreadyInGlossary,
       jaCandidates,
-      sampleGroupIds: rec.groups.map((g) => g.groupId),
-    });
-  }
-
-  return candidates
-    .sort((a, b) => {
-      if (a.alreadyInGlossary !== b.alreadyInGlossary) return a.alreadyInGlossary ? 1 : -1;
-      return b.count - a.count || b.wordCount - a.wordCount || a.enTerm.localeCompare(b.enTerm);
-    })
-    .slice(0, maxResults);
+      sampleGroupIds: cand.groups.map((g) => g.groupId),
+    };
+  });
 }

@@ -1118,4 +1118,47 @@ test('Per-entry exactMatch disables automatic inflection matching to separate si
   assert.equal(parsedLegacy[0].notes, 'メモ');
 });
 
+test('extractTermCandidates supports up to 7-grams, >40 maxResults, minN filtering, and full-span glossary matching', () => {
+  const longPhrase = 'United Nations Framework Convention on Climate Change';
+  const blocks = parseDocumentBlocks(
+    `${longPhrase} applies broadly.\n\n国連気候変動枠組条約は広く適用される。\n\n${longPhrase} guides reporting.\n\n国連気候変動枠組条約は報告の指針となる。`,
+  );
 
+  // Extract 4-7 grams and check 7-gram candidate
+  const longOnly = extractTermCandidates(
+    blocks,
+    [{ enHeadword: 'convention', enVariants: [], jaAccepted: ['条約'], jaDeprecated: [] }],
+    { minFreq: 2, minN: 4, maxN: 7, maxResults: 200 },
+  );
+  const sevenGram = longOnly.find((c) => c.enTerm === longPhrase);
+  assert.ok(sevenGram);
+  assert.equal(sevenGram.wordCount, 7);
+  assert.equal(sevenGram.count, 2);
+  // Single-word glossary entry "convention" must NOT falsely mark the 7-gram phrase as already registered
+  assert.equal(sevenGram.alreadyInGlossary, false);
+  assert.ok(sevenGram.jaCandidates.some((j) => j.jaTerm.includes('国連気候変動枠組条約')));
+
+  // Registered 1-word entry itself should still be marked alreadyInGlossary: true
+  const allN = extractTermCandidates(
+    blocks,
+    [{ enHeadword: 'convention', enVariants: [], jaAccepted: ['条約'], jaDeprecated: [] }],
+    { minFreq: 2, minN: 1, maxN: 7, maxResults: 200 },
+  );
+  const singleRegistered = allN.find((c) => c.enTerm.toLowerCase() === 'convention');
+  assert.ok(singleRegistered);
+  assert.equal(singleRegistered.alreadyInGlossary, true);
+  assert.ok(allN.every((c) => c.wordCount >= 1 && c.wordCount <= 7));
+
+  // Verify >40 results can be returned
+  const manyWords = Array.from({ length: 55 }, (_, i) => `termword${String(i).padStart(2, '0')}`).join(' ');
+  const manyBlocks = parseDocumentBlocks(
+    `${manyWords}.\n\nテスト文一。\n\n${manyWords}.\n\nテスト文二。`,
+  );
+  const overForty = extractTermCandidates(manyBlocks, [], {
+    minFreq: 2,
+    minN: 1,
+    maxN: 7,
+    maxResults: 200,
+  });
+  assert.ok(overForty.length > 40);
+});
