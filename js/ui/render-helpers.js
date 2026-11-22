@@ -27,12 +27,24 @@ export const WARNING_LABELS = {
 
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
+  const tagLower = String(tag).toLowerCase();
+  const useValueProp =
+    tagLower === 'textarea' ||
+    tagLower === 'input' ||
+    tagLower === 'select' ||
+    tagLower === 'option';
+  let hasDeferredValue = false;
+  let deferredValue = '';
+
   for (const [key, val] of Object.entries(attrs)) {
     if (val === null || val === undefined || val === false) continue;
     if (key === 'className') {
       node.className = val;
     } else if (key === 'textContent') {
       node.textContent = val;
+    } else if (key === 'value' && useValueProp) {
+      hasDeferredValue = true;
+      deferredValue = String(val);
     } else if (key.startsWith('on') && typeof val === 'function') {
       node.addEventListener(key.slice(2).toLowerCase(), val);
     } else if (key === 'dataset' && typeof val === 'object') {
@@ -55,7 +67,27 @@ export function el(tag, attrs = {}, children = []) {
       node.appendChild(child);
     }
   }
+  if (hasDeferredValue) {
+    node.value = deferredValue;
+  }
   return node;
+}
+
+function wrapTermHighlightNode(innerNode, seg) {
+  if (seg.termState === 'deprecated') {
+    return el('span', { className: 'tm-term-match is-deprecated', title: seg.termTitle || null }, [
+      innerNode,
+    ]);
+  }
+  if (seg.termState === 'typo') {
+    return el('span', { className: 'tm-term-match is-typo', title: seg.termTitle || null }, [
+      innerNode,
+    ]);
+  }
+  if (seg.termState === 'matched') {
+    return el('span', { className: 'tm-term-match', title: seg.termTitle || null }, [innerNode]);
+  }
+  return innerNode;
 }
 
 /**
@@ -81,25 +113,7 @@ export function renderRichSentenceFragment(
       ? el('mark', { className: 'sentence-marker', textContent: seg.value })
       : document.createTextNode(seg.value);
 
-    if (seg.termState === 'deprecated') {
-      innerNode = el(
-        'span',
-        { className: 'tm-term-match is-deprecated', title: seg.termTitle || null },
-        [innerNode],
-      );
-    } else if (seg.termState === 'typo') {
-      innerNode = el(
-        'span',
-        { className: 'tm-term-match is-typo', title: seg.termTitle || null },
-        [innerNode],
-      );
-    } else if (seg.termState === 'matched') {
-      innerNode = el(
-        'span',
-        { className: 'tm-term-match', title: seg.termTitle || null },
-        [innerNode],
-      );
-    }
+    innerNode = wrapTermHighlightNode(innerNode, seg);
 
     if (seg.clauseState === 'checked') {
       innerNode = el('span', { className: 'clause-span is-checked' }, [innerNode]);
@@ -138,25 +152,7 @@ export function renderClauseFragment(
       ? el('mark', { className: 'sentence-marker', textContent: seg.value })
       : document.createTextNode(seg.value);
 
-    if (seg.termState === 'deprecated') {
-      innerNode = el(
-        'span',
-        { className: 'tm-term-match is-deprecated', title: seg.termTitle || null },
-        [innerNode],
-      );
-    } else if (seg.termState === 'typo') {
-      innerNode = el(
-        'span',
-        { className: 'tm-term-match is-typo', title: seg.termTitle || null },
-        [innerNode],
-      );
-    } else if (seg.termState === 'matched') {
-      innerNode = el(
-        'span',
-        { className: 'tm-term-match', title: seg.termTitle || null },
-        [innerNode],
-      );
-    }
+    innerNode = wrapTermHighlightNode(innerNode, seg);
 
     if (seg.type === 'em') {
       frag.appendChild(el('em', {}, [innerNode]));

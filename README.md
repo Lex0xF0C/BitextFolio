@@ -73,7 +73,8 @@ Node.js やビルドツールは不要です。Windows 等でファイルをそ�
 │   │   ├── markers.js       # 長文マーカ範囲・用語下線分割・分割/結合追従
 │   │   ├── markup.js        # インライン記法保持・照合用プレーン化・ハッシュ
 │   │   ├── sentence-splitter.js # 英日文分割・箇条書き行分割
-│   │   └── tm.js            # 共起用語候補抽出・TMX出力・類似度補助
+│   │   ├── tm.js            # 共起用語候補抽出・TMX出力・類似度補助
+│   │   └── virtual-window.js # 仮想スクロール表示範囲・アンカー補正の純粋計算
 │   ├── state/
 │   │   └── store.js         # アプリ状態管理・IndexedDB自動保存
 │   ├── storage/
@@ -84,7 +85,11 @@ Node.js やビルドツールは不要です。Windows 等でファイルをそ�
 │       ├── render-helpers.js # 安全なDOM生成（innerHTML不使用）・下線/マーカ描画
 │       └── workspace.js     # 2列/上下表示・仮想スクロール・D&D・右クリック登録
 ├── tests/
-│   └── core.test.js         # Node.js 標準テストランナー用単体テスト
+│   ├── core.test.js         # Node.js 標準テストランナー用単体テスト
+│   ├── invariants.test.js   # CSP・通信ゼロ・静的配信・P1/P2不変条件テスト
+│   └── render-helpers.test.js # 安全DOMヘルパーの単体テスト
+├── CHANGELOG.md             # 変更履歴
+├── docs/decisions.md        # 設計判断・閾値・誤検出対策の記録
 └── package.json             # 開発用ローカルサーバー・型チェック・テスト用設定（公開時は不要）
 ```
 
@@ -95,8 +100,8 @@ Node.js やビルドツールは不要です。Windows 等でファイルをそ�
 公開自体には不要ですが、ロジック変更後の回帰テストやローカル確認を行う場合は Node.js 20+ を利用できます。
 
 ```bash
-# 単体テストの実行（DOM非依存コアモジュール 25件）
-node --test tests/core.test.js
+# 単体テスト・不変条件テストの実行
+node --test tests/*.test.js
 
 # 初回のみ開発用ツールを入れる場合
 npm install

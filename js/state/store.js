@@ -25,6 +25,7 @@ import {
   createDocumentProject,
   insertTextIntoGroup,
   mergeWithNextBlock,
+  mergeWithNextBlockAndBoundarySentences,
   parseDocumentBlocks,
   realignBlockWithHints,
   SAMPLE_SOURCE_TEXT,
@@ -564,7 +565,9 @@ export function createAppStore() {
         return { ...proj, lastFocusedGroupId: groupId, blocks };
       });
       if (status === 'needs_review') {
-        state.openMemoGroupIds.add(groupId);
+        const nextOpenMemoIds = new Set(state.openMemoGroupIds);
+        nextOpenMemoIds.add(groupId);
+        state.openMemoGroupIds = nextOpenMemoIds;
         notify();
       }
     },
@@ -754,6 +757,50 @@ export function createAppStore() {
         return { ...proj, blocks };
       }, true);
       showToast('次のブロックと結合しました');
+    },
+    mergeBlockAndBoundarySentences(blockIndex, mergeLangs = 'both') {
+      const projBefore = getActiveProject();
+      if (!projBefore || blockIndex < 0 || blockIndex + 1 >= projBefore.blocks.length) return;
+      const fallbackGroupId =
+        projBefore.blocks[blockIndex]?.groups?.at(-1)?.id ||
+        projBefore.blocks[blockIndex]?.groups?.[0]?.id ||
+        null;
+
+      updateActiveProject((proj) => {
+        const blocks = mergeWithNextBlockAndBoundarySentences(
+          proj.blocks,
+          blockIndex,
+          state.abbreviations,
+          {
+            splitInsideList: Boolean(proj.splitInsideList),
+            mergeLangs,
+          },
+        );
+        return { ...proj, blocks };
+      }, true);
+
+      const projAfter = getActiveProject();
+      if (state.selectedGroupId && projAfter) {
+        const stillExists = projAfter.blocks.some((b) =>
+          b.groups.some((g) => g.id === state.selectedGroupId),
+        );
+        if (!stillExists) {
+          const mergedBlock = projAfter.blocks[blockIndex];
+          const hasFallback = mergedBlock?.groups?.some((g) => g.id === fallbackGroupId);
+          state.selectedGroupId = hasFallback
+            ? fallbackGroupId
+            : mergedBlock?.groups?.[0]?.id || null;
+          notify();
+        }
+      }
+
+      if (mergeLangs === 'en') {
+        showToast('次ブロックと結合し、境界の英文を1文にまとめました');
+      } else if (mergeLangs === 'ja') {
+        showToast('次ブロックと結合し、境界の和文を1文にまとめました');
+      } else {
+        showToast('次ブロックと結合し、境界の文を1文にまとめました');
+      }
     },
     realignBlock(blockId, useHintDp = true, splitInsideList = null) {
       const projSplit = Boolean(getActiveProject()?.splitInsideList);

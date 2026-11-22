@@ -19,6 +19,10 @@ import {
 } from '../core/markers.js';
 import { extractJapaneseCandidateTerms } from '../core/tm.js';
 import {
+  computeAnchoredScrollTop,
+  computeVirtualWindowRange,
+} from '../core/virtual-window.js';
+import {
   blockHasActiveHints,
   blockHasGlossaryIssues,
   blockMatchesFilter,
@@ -1101,6 +1105,14 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       itemEl.appendChild(splitEditor);
     }
 
+    const allBlocks = store.getActiveProject()?.blocks || [];
+    const nextBlockForMerge =
+      block.index + 1 < allBlocks.length ? allBlocks[block.index + 1] : null;
+    const nextHasSameLang = Boolean(
+      nextBlockForMerge &&
+        (nextBlockForMerge[lang === 'en' ? 'enSentences' : 'jaSentences'] || []).length > 0,
+    );
+
     const markerPct = computeMarkerCoveragePercent(sentence.markers, sentence.plainText.length);
     const actions = el('div', { className: 'sentence-actions' }, [
       el('button', {
@@ -1135,6 +1147,15 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         disabled: listIdx + 1 >= totalInLang,
         onClick: () => store.mergeSentenceWithNext(block.id, lang, sentence.id),
       }),
+      listIdx + 1 >= totalInLang && nextHasSameLang
+        ? el('button', {
+            type: 'button',
+            className: 'btn btn-ghost btn-xs',
+            textContent: '次ブロック＋次文結合↓',
+            title: '次のブロックと結合したうえで、この文と次ブロックの先頭文を1文につなげます（空行で1文が途中で分断されたとき）',
+            onClick: () => store.mergeBlockAndBoundarySentences(block.index, lang),
+          })
+        : null,
       el('button', {
         type: 'button',
         className: 'btn btn-ghost btn-xs',
@@ -1272,6 +1293,24 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
             onClick: () => store.mergeBlockWithFollowing(block.index),
           })
         : null,
+      (() => {
+        if (block.index + 1 >= allBlocksCount) return null;
+        const nextBlk = (store.getActiveProject()?.blocks || [])[block.index + 1] || null;
+        const hasSharedEn = Boolean(
+          nextBlk && (block.enSentences || []).length > 0 && (nextBlk.enSentences || []).length > 0,
+        );
+        const hasSharedJa = Boolean(
+          nextBlk && (block.jaSentences || []).length > 0 && (nextBlk.jaSentences || []).length > 0,
+        );
+        return el('button', {
+          type: 'button',
+          className: 'btn btn-xs',
+          textContent: '次ブロック＋境界文結合',
+          title: '次のブロックと結合し、さらにブロック境界で分断された末尾文と先頭文（英・和）を1文にまとめます',
+          disabled: !hasSharedEn && !hasSharedJa,
+          onClick: () => store.mergeBlockAndBoundarySentences(block.index, 'both'),
+        });
+      })(),
       el('button', {
         type: 'button',
         className: 'btn btn-xs',
@@ -2084,7 +2123,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           glossaryStrip.appendChild(
             el('div', {
               className: 'glossary-warning-line',
-              textContent: `⚠ 用語注意（非推奨訳語）: 「${item.foundDeprecated.join(', ')}」が使用されています ${rec}`,
+              textContent: `⚠ 非推奨訳語の候補を検出: 「${item.foundDeprecated.join(', ')}」が含まれています ${rec}`,
             }),
           );
         }
@@ -2109,7 +2148,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           glossaryStrip.appendChild(
             el('div', {
               className: 'glossary-warning-line',
-              textContent: `⚠ 用語不統一: 英語「${item.enHits.join(', ')}」に対応する許容訳語（${item.entry.jaAccepted.join(' / ')}）が和文に見当たりません`,
+              textContent: `⚠ 登録訳語が未検出: 英語「${item.enHits.join(', ')}」に対応する許容訳語（${item.entry.jaAccepted.join(' / ')}）が和文に見当たりません`,
             }),
           );
         }
@@ -2120,7 +2159,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
           glossaryStrip.appendChild(
             el('div', {
               className: 'glossary-ok-line',
-              textContent: `✓ 用語一致: ${okSummary}`,
+              textContent: `ℹ 登録訳語を検出: ${okSummary}`,
             }),
           );
         }
@@ -2367,29 +2406,17 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       }
     }
 
-    const viewTop = blocksViewport.scrollTop;
-    const viewBottom = viewTop + blocksViewport.clientHeight;
-    let accY = 0;
-    let startIdx = 0;
-    let endIdx = total;
-    let topH = 0;
-    let bottomH = 0;
-
-    for (let i = 0; i < total; i += 1) {
-      const h = blockHeights.get(blocks[i].id) || DEFAULT_BLOCK_HEIGHT;
-      if (accY + h < viewTop - OVERSCAN_PX) {
-        startIdx = i + 1;
-        topH += h;
-      } else if (accY > viewBottom + OVERSCAN_PX) {
-        endIdx = i;
-        break;
-      }
-      accY += h;
-    }
-
-    for (let i = endIdx; i < total; i += 1) {
-      bottomH += blockHeights.get(blocks[i].id) || DEFAULT_BLOCK_HEIGHT;
-    }
+    const {
+      startIdx,
+      endIdx,
+      topHeight: topH,
+      bottomHeight: bottomH,
+    } = computeVirtualWindowRange(blocks, blockHeights, {
+      viewTop: blocksViewport.scrollTop,
+      clientHeight: blocksViewport.clientHeight,
+      defaultBlockHeight: DEFAULT_BLOCK_HEIGHT,
+      overscanPx: OVERSCAN_PX,
+    });
 
     if (!forceRedraw && startIdx === lastRenderRange.start && endIdx === lastRenderRange.end) {
       return;
@@ -2443,9 +2470,13 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
       );
       if (anchorEl) {
         const anchorNewTop = anchorEl.getBoundingClientRect().top - vpRect.top;
-        const delta = anchorNewTop - anchorOldTop;
-        if (Math.abs(delta) >= 2) {
-          blocksViewport.scrollTop = Math.max(0, blocksViewport.scrollTop + delta);
+        const nextScrollTop = computeAnchoredScrollTop(
+          blocksViewport.scrollTop,
+          anchorOldTop,
+          anchorNewTop,
+        );
+        if (nextScrollTop !== null) {
+          blocksViewport.scrollTop = nextScrollTop;
         }
       }
     }
@@ -2519,7 +2550,7 @@ export function mountWorkspace(rootEl, store, onOpenImportSample) {
         warningSummaryItems.appendChild(
           el('span', {
             className: 'tabular-nums',
-            textContent: `用語不統一 ${stats.glossaryWarningGroups}グループ`,
+            textContent: `用語未一致・非推奨候補 ${stats.glossaryWarningGroups}グループ`,
           }),
         );
       }

@@ -2,5 +2,5 @@
   "name": "英日対訳チェック支援ツール",
   "description": "英語段落と日本語訳段落の対応確認・文分割調整・進捗記録をブラウザ内で完結して行える静的対訳レビュー支援ツール",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

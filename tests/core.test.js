@@ -34,6 +34,7 @@ import { pairClassifiedBlocks, splitIntoRawBlocks } from '../js/core/block-parse
 import {
   buildAlignmentBlock,
   insertTextIntoGroup,
+  mergeWithNextBlockAndBoundarySentences,
   parseDocumentBlocks,
   SAMPLE_SOURCE_TEXT,
   updateBlockJapaneseText,
@@ -63,6 +64,10 @@ import {
   extractTermCandidates,
   findTmMatches,
 } from '../js/core/tm.js';
+import {
+  computeAnchoredScrollTop,
+  computeVirtualWindowRange,
+} from '../js/core/virtual-window.js';
 
 test('English splitter preserves abbreviations, decimals, versions, and quotes', () => {
   const input =
@@ -928,7 +933,116 @@ test('Fuzzy typo check honors ON/OFF toggle, 3-char minLength option, highlight 
   assert.ok(segs.some((s) => s.value === 'アドバザリー' && s.termState === 'typo'));
 });
 
+test('mergeWithNextBlockAndBoundarySentences merges block and boundary sentences in one step', () => {
+  // 1) 'both': Block 0 and Block 1 split mid-sentence across a blank line
+  const b0 = buildAlignmentBlock('The first half', '前半の和文', 0);
+  b0.enSentences[0].markers = [{ start: 0, end: 3, color: 'yellow' }];
+  b0.groups[0].status = 'read';
+  b0.groups[0].memo = 'メモA';
 
+  const b1 = buildAlignmentBlock('of the sentence. Next sentence.', '後半の和文。次の和文です。', 1);
+  b1.enSentences[0].markers = [{ start: 0, end: 2, color: 'green' }];
+  b1.groups[0].memo = 'メモB';
+  b1.groups[1].status = 'verified';
 
+  const b2 = buildAlignmentBlock('Third block.', '第3ブロック。', 2);
 
+  const mergedBoth = mergeWithNextBlockAndBoundarySentences([b0, b1, b2], 0, [], {
+    mergeLangs: 'both',
+  });
+  assert.equal(mergedBoth.length, 2);
+  assert.equal(mergedBoth[0].index, 0);
+  assert.equal(mergedBoth[1].index, 1);
+
+  const m = mergedBoth[0];
+  assert.equal(m.enRaw, 'The first half of the sentence. Next sentence.');
+  assert.equal(m.jaRaw, '前半の和文後半の和文。次の和文です。');
+  assert.equal(m.enSentences.length, 2);
+  assert.equal(m.jaSentences.length, 2);
+  assert.equal(m.enSentences[0].plainText, 'The first half of the sentence.');
+  assert.equal(m.jaSentences[0].plainText, '前半の和文後半の和文。');
+  assert.equal(m.enSentences[1].plainText, 'Next sentence.');
+  assert.equal(m.jaSentences[1].plainText, '次の和文です。');
+
+  // Preserves markers, status, and merges boundary memos cleanly
+  assert.equal(m.enSentences[0].markers.length, 2);
+  assert.equal(m.groups.length, 2);
+  assert.equal(m.groups[0].status, 'read');
+  assert.equal(m.groups[0].memo, 'メモA\nメモB');
+  assert.equal(m.groups[1].status, 'verified');
+
+  // 2) 'en' only with orphan bridging: EN-only tail in Block 0 + paired head in Block 1
+  const eOnly0 = buildAlignmentBlock('Split start', '', 0);
+  const pair1 = buildAlignmentBlock('split end.', '対応する和文。', 1);
+  const mergedEnOnly = mergeWithNextBlockAndBoundarySentences([eOnly0, pair1], 0, [], {
+    mergeLangs: 'en',
+  });
+  assert.equal(mergedEnOnly.length, 1);
+  assert.equal(mergedEnOnly[0].enSentences.length, 1);
+  assert.equal(mergedEnOnly[0].enSentences[0].plainText, 'Split start split end.');
+  assert.equal(mergedEnOnly[0].jaSentences.length, 1);
+  assert.equal(mergedEnOnly[0].groups.length, 1);
+  assert.deepEqual(mergedEnOnly[0].groups[0].jaIds, [mergedEnOnly[0].jaSentences[0].id]);
+
+  // 3) Disjoint blocks fallback (EN-only + JA-only): falls back to standard structural merge
+  const enOrphan = buildAlignmentBlock('Only English.', '', 0);
+  const jaOrphan = buildAlignmentBlock('', '日本語のみ。', 1);
+  const fallbackMerged = mergeWithNextBlockAndBoundarySentences([enOrphan, jaOrphan], 0, [], {
+    mergeLangs: 'both',
+  });
+  assert.equal(fallbackMerged.length, 1);
+  assert.equal(fallbackMerged[0].enSentences.length, 1);
+  assert.equal(fallbackMerged[0].jaSentences.length, 1);
+  assert.equal(fallbackMerged[0].groups.length, 1);
+});
+
+test('virtual-window computes visible index range, spacer heights, and scroll anchoring deterministically', () => {
+  const blocks = Array.from({ length: 10 }, (_, i) => ({ id: `b_${i}` }));
+  const heights = new Map([
+    ['b_0', 300],
+    ['b_1', 300],
+    ['b_2', 400],
+    ['b_3', 200],
+    ['b_4', 250],
+  ]);
+
+  // Empty list edge case
+  assert.deepEqual(
+    computeVirtualWindowRange([], heights, { viewTop: 500, clientHeight: 600 }),
+    { startIdx: 0, endIdx: 0, topHeight: 0, bottomHeight: 0 },
+  );
+
+  // Scrolled near top with overscan covering first items
+  const rTop = computeVirtualWindowRange(blocks, heights, {
+    viewTop: 0,
+    clientHeight: 500,
+    defaultBlockHeight: 280,
+    overscanPx: 300,
+  });
+  assert.equal(rTop.startIdx, 0);
+  assert.equal(rTop.topHeight, 0);
+  assert.ok(rTop.endIdx >= 3 && rTop.endIdx <= 5);
+  assert.ok(rTop.bottomHeight > 0);
+
+  // Scrolled to middle: items above viewTop - overscan contribute to topHeight
+  // Cumulative heights: b_0(300), b_1(600), b_2(1000), b_3(1200), b_4(1450), b_5(1730), b_6(2010)...
+  const rMid = computeVirtualWindowRange(blocks, heights, {
+    viewTop: 1200,
+    clientHeight: 400,
+    defaultBlockHeight: 280,
+    overscanPx: 200,
+  });
+  // viewTop - overscan = 1000 -> b_0(300 < 1000), b_1(600 < 1000), b_2(1000 is not < 1000) => startIdx = 2
+  assert.equal(rMid.startIdx, 2);
+  assert.equal(rMid.topHeight, 600);
+  // viewBottom + overscan = 1800 -> b_6 starts at 1730 <= 1800, b_7 starts at 2010 > 1800 => endIdx = 7
+  assert.equal(rMid.endIdx, 7);
+  assert.equal(rMid.bottomHeight, 280 * 3);
+
+  // Scroll anchoring ignores tiny jitter (< 2px) and top=0
+  assert.equal(computeAnchoredScrollTop(0, 10, 50), null);
+  assert.equal(computeAnchoredScrollTop(500, 100, 101.5), null);
+  assert.equal(computeAnchoredScrollTop(500, 100, 140), 540);
+  assert.equal(computeAnchoredScrollTop(20, 100, 50), 0);
+});
 

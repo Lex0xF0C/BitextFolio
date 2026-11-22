@@ -12,6 +12,7 @@ import {
 import {
   createInitialGroups,
   makeSentenceItem,
+  mergeSentenceWithNextInBlock,
   nextLocalId,
   suggestHintedGroups,
   syncBlockMeta,
@@ -383,6 +384,131 @@ export function mergeWithNextBlock(blocks, blockIndex, abbreviations, options = 
     splitInsideList,
     warnings: [],
   });
+
+  const nextList = [
+    ...blocks.slice(0, blockIndex),
+    mergedBlock,
+    ...blocks.slice(blockIndex + 2),
+  ];
+  return nextList.map((b, idx) => ({ ...b, index: idx }));
+}
+
+/**
+ * Merges a block with the next block AND merges the boundary sentences
+ * (last sentence of `curr` with first sentence of `next`) for `'en'`, `'ja'`, or `'both'`,
+ * preserving existing sentence markers, statuses, and memos.
+ */
+export function mergeWithNextBlockAndBoundarySentences(
+  blocks,
+  blockIndex,
+  abbreviations,
+  options = {},
+) {
+  if (blockIndex < 0 || blockIndex + 1 >= blocks.length) return blocks;
+  const curr = blocks[blockIndex];
+  const next = blocks[blockIndex + 1];
+  const mergeLangs = options.mergeLangs || 'both';
+
+  const hasSharedEn = (curr.enSentences || []).length > 0 && (next.enSentences || []).length > 0;
+  const hasSharedJa = (curr.jaSentences || []).length > 0 && (next.jaSentences || []).length > 0;
+  const doMergeEn = (mergeLangs === 'both' || mergeLangs === 'en') && hasSharedEn;
+  const doMergeJa = (mergeLangs === 'both' || mergeLangs === 'ja') && hasSharedJa;
+
+  // Fallback to structural merge if blocks are strictly disjoint orphan sides (e.g. EN-only + JA-only)
+  if (!hasSharedEn && !hasSharedJa) {
+    return mergeWithNextBlock(blocks, blockIndex, abbreviations, options);
+  }
+
+  const joinRaw = (a, b, lang, joinSingleSentence) => {
+    if (a && b) {
+      if (joinSingleSentence) {
+        const joiner = lang === 'en' ? ' ' : '';
+        return `${String(a).trimEnd()}${joiner}${String(b).trimStart()}`.trim();
+      }
+      return `${a}\n\n${b}`;
+    }
+    return a || b || '';
+  };
+
+  const mergedEnRaw = joinRaw(curr.enRaw, next.enRaw, 'en', doMergeEn);
+  const mergedJaRaw = joinRaw(curr.jaRaw, next.jaRaw, 'ja', doMergeJa);
+  const splitInsideList =
+    options.splitInsideList !== undefined
+      ? Boolean(options.splitInsideList)
+      : Boolean(curr.splitInsideList || next.splitInsideList);
+  const hashes = buildBlockHashes(mergedEnRaw, mergedJaRaw);
+
+  const currEn = curr.enSentences || [];
+  const nextEn = next.enSentences || [];
+  const currJa = curr.jaSentences || [];
+  const nextJa = next.jaSentences || [];
+
+  let combinedGroups = [...(curr.groups || []), ...(next.groups || [])].map((g) => ({
+    ...g,
+    enIds: [...(g.enIds || [])],
+    jaIds: [...(g.jaIds || [])],
+  }));
+
+  // Bridge orphan opposite-side IDs when merging a boundary sentence between an unmatched group and next block's first group
+  const currLastGroup = (curr.groups || []).length > 0 ? combinedGroups[curr.groups.length - 1] : null;
+  const nextFirstGroup = (next.groups || []).length > 0 ? combinedGroups[curr.groups.length] : null;
+
+  if (currLastGroup && nextFirstGroup) {
+    const mergeMemos = (a, b) => {
+      const ca = String(a || '').trim();
+      const cb = String(b || '').trim();
+      if (ca && cb && ca !== cb) return `${ca}\n${cb}`;
+      return ca || cb;
+    };
+
+    if (
+      doMergeEn &&
+      !doMergeJa &&
+      currLastGroup.jaIds.length === 0 &&
+      nextFirstGroup.enIds.length === 1 &&
+      nextFirstGroup.jaIds.length > 0
+    ) {
+      currLastGroup.jaIds = [...nextFirstGroup.jaIds];
+      currLastGroup.memo = mergeMemos(currLastGroup.memo, nextFirstGroup.memo);
+      nextFirstGroup.jaIds = [];
+    } else if (
+      doMergeJa &&
+      !doMergeEn &&
+      currLastGroup.enIds.length === 0 &&
+      nextFirstGroup.jaIds.length === 1 &&
+      nextFirstGroup.enIds.length > 0
+    ) {
+      currLastGroup.enIds = [...nextFirstGroup.enIds];
+      currLastGroup.memo = mergeMemos(currLastGroup.memo, nextFirstGroup.memo);
+      nextFirstGroup.enIds = [];
+    } else if (doMergeEn && doMergeJa && nextFirstGroup.enIds.length <= 1 && nextFirstGroup.jaIds.length <= 1) {
+      currLastGroup.memo = mergeMemos(currLastGroup.memo, nextFirstGroup.memo);
+    }
+  }
+
+  let mergedBlock = syncBlockMeta({
+    ...curr,
+    index: blockIndex,
+    enRaw: mergedEnRaw,
+    jaRaw: mergedJaRaw,
+    enLang: mergedEnRaw ? 'en' : null,
+    jaLang: mergedJaRaw ? 'ja' : null,
+    enConfidence: mergedEnRaw ? 1 : 0,
+    jaConfidence: mergedJaRaw ? 1 : 0,
+    splitInsideList,
+    warnings: [],
+    enSentences: [...currEn, ...nextEn],
+    jaSentences: [...currJa, ...nextJa],
+    groups: combinedGroups,
+    ...hashes,
+  });
+
+  if (doMergeEn) {
+    mergedBlock = mergeSentenceWithNextInBlock(mergedBlock, 'en', currEn[currEn.length - 1].id);
+  }
+  if (doMergeJa) {
+    mergedBlock = mergeSentenceWithNextInBlock(mergedBlock, 'ja', currJa[currJa.length - 1].id);
+  }
 
   const nextList = [
     ...blocks.slice(0, blockIndex),

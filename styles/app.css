@@ -1257,7 +1257,7 @@ mark.sentence-marker .tm-term-match.is-typo {
 }
 
 .glossary-ok-line {
-  color: var(--status-verified-fg);
+  color: var(--status-read-fg);
 }
 
 .hints-strip {
